@@ -36,7 +36,7 @@ OPENAI_MODEL_OPTIONS = (
     ),
 )
 DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_MAX_OUTPUT_TOKENS = 4_096
 DEFAULT_MAX_TRANSIENT_RETRIES = 2
 TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -285,9 +285,30 @@ class OpenAIProvider:
                     json=payload,
                     timeout=self._timeout_seconds,
                 )
-            except requests.RequestException as exc:
+            except requests.exceptions.Timeout as exc:
                 raise OpenAIAPIError(
-                    "The OpenAI request failed before receiving a response."
+                    "OpenAI did not respond within "
+                    f"{self._timeout_seconds:g} seconds. Increase Request Timeout in the "
+                    "extension preferences or use a faster model.",
+                    error_code="request_timeout",
+                ) from exc
+            except requests.exceptions.SSLError as exc:
+                raise OpenAIAPIError(
+                    "A secure TLS connection to OpenAI could not be established. Check the "
+                    "system clock, certificate store, proxy, and firewall settings.",
+                    error_code="tls_error",
+                ) from exc
+            except requests.exceptions.ConnectionError as exc:
+                raise OpenAIAPIError(
+                    "Could not connect to OpenAI. Confirm Blender network access and check the "
+                    "internet connection, proxy, firewall, and DNS settings.",
+                    error_code="connection_error",
+                ) from exc
+            except requests.exceptions.RequestException as exc:
+                raise OpenAIAPIError(
+                    "The OpenAI request failed before receiving a response. Check Blender "
+                    "network access and the extension's connection settings.",
+                    error_code="transport_error",
                 ) from exc
 
             if (

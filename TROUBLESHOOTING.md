@@ -2,7 +2,7 @@
 
 ## Extension Will Not Install
 
-Confirm that the selected file is the unextracted `blender_ai_assistant-0.1.3.zip` and that Blender is
+Confirm that the selected file is the unextracted `blender_ai_assistant-0.1.4.zip` and that Blender is
 5.1.x. Older Blender versions are rejected by the manifest. If Blender reports invalid metadata,
 download or rebuild the archive rather than editing its contents.
 
@@ -31,10 +31,13 @@ investigating provider issues, but never share the API key.
 
 ## Timeout or Network Error
 
-Verify internet access, proxy/firewall rules, Blender's network permission for the extension, and
-access to `api.openai.com`. Increase the request timeout in preferences only when the connection is
-reliably slow. Transport failures with no HTTP response are not retried automatically because the
-server may already have accepted a billable request.
+The UI now distinguishes request timeout, TLS, and connection failures. The default timeout is 180
+seconds because complex structured plans can take longer than 60 seconds, especially with GPT-5.5
+and high operation/output limits. If a request still times out, increase `Request Timeout` up to 600
+seconds or use a faster Nano model. For connection errors, verify internet access, proxy/firewall and
+DNS rules, Blender's network permission for the extension, and access to `api.openai.com`. Transport
+failures with no HTTP response are not retried automatically because the server may already have
+accepted a billable request.
 
 ## Invalid or Incomplete Plan
 

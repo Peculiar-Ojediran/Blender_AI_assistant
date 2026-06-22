@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "blender_ai_assistant"
-version = "0.1.3"
+version = "0.1.4"
 name = "Blender AI Assistant"
 tagline = "Plan controlled Blender changes with OpenAI"
 maintainer = "Blender AI Assistant Contributors"

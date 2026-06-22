@@ -15,7 +15,7 @@ not release-qualified yet, even though the bundled Python wheels are cross-platf
 1. Open Blender.
 2. Open `Edit > Preferences > Extensions`.
 3. Open the Extensions menu and choose `Install from Disk`.
-4. Select `blender_ai_assistant-0.1.3.zip` without extracting it.
+4. Select `blender_ai_assistant-0.1.4.zip` without extracting it.
 5. Approve the declared network permission and enable `Blender AI Assistant` if Blender does not
    enable it automatically.
 6. Close Preferences, open the 3D View sidebar, and select the `AI Assistant` tab.
@@ -62,4 +62,4 @@ files or OpenAI account data.
 
 Source environment creation, Blender CLI validation, fixture generation, and release commands are in
 `DEVELOPMENT_SETUP.md`. The local bridge described as a possible future architecture is not required
-for version 0.1.3.
+for version 0.1.4.

@@ -20,6 +20,8 @@ from ..providers.openai import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_REASONING_EFFORT,
+    DEFAULT_TIMEOUT_SECONDS,
+    OpenAIAPIError,
     OpenAIProvider,
 )
 from ..workflow import (
@@ -68,7 +70,7 @@ def start_planning_job(
     api_key: str,
     model: str = DEFAULT_MODEL,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     provider: Provider | None = None,
     conversation: PlanningConversation | None = None,
@@ -222,7 +224,16 @@ def _show_failure(state: AIASSISTANT_PG_State, error: Exception) -> None:
     clear_plan(state)
     state.workflow_status = WorkflowStatus.ERROR.value
     state.status_message = "Planning failed"
-    state.error_headline = "Could not prepare a valid plan"
+    if isinstance(error, OpenAIAPIError) and error.error_code == "request_timeout":
+        state.error_headline = "OpenAI request timed out"
+    elif isinstance(error, OpenAIAPIError) and error.error_code in {
+        "connection_error",
+        "tls_error",
+        "transport_error",
+    }:
+        state.error_headline = "Could not connect to OpenAI"
+    else:
+        state.error_headline = "Could not prepare a valid plan"
     state.error_details = str(error) or type(error).__name__
 
 

@@ -36,7 +36,9 @@ from extension.operations.targets import (  # noqa: E402
 from extension.providers.base import PlanRequest, PlanResponse, TokenUsage  # noqa: E402
 from extension.providers.openai import (  # noqa: E402
     CUSTOM_MODEL_OPTION,
+    DEFAULT_TIMEOUT_SECONDS,
     OPENAI_MODEL_OPTIONS,
+    OpenAIAPIError,
 )
 from extension.ui import planning as planning_module  # noqa: E402
 from extension.ui.operators import (  # noqa: E402
@@ -298,6 +300,10 @@ for property_name, expected_default, expected_maximum in (
     assert limit_property.default == expected_default
     assert limit_property.hard_min == 1
     assert limit_property.hard_max == expected_maximum
+timeout_property: Any = AIASSISTANT_AP_preferences.bl_rna.properties["request_timeout"]
+assert timeout_property.default == DEFAULT_TIMEOUT_SECONDS
+assert timeout_property.hard_min == 5.0
+assert timeout_property.hard_max == 600.0
 assert hasattr(bpy.types, "AIASSISTANT_PT_limits")
 
 window_manager = cast(Any, bpy.context.window_manager)
@@ -395,6 +401,17 @@ assert ui_state.workflow_status == "awaiting_approval"
 assert blender_ai_ops.reject_plan() == {"FINISHED"}
 
 planning_module_any = cast(Any, planning_module)
+planning_module_any._show_failure(
+    ui_state,
+    OpenAIAPIError("Timed out.", error_code="request_timeout"),
+)
+assert ui_state.error_headline == "OpenAI request timed out"
+planning_module_any._show_failure(
+    ui_state,
+    OpenAIAPIError("Offline.", error_code="connection_error"),
+)
+assert ui_state.error_headline == "Could not connect to OpenAI"
+
 original_process_events = planning_module_any.process_planning_events
 original_print_exc = planning_module_any.traceback.print_exc
 try:

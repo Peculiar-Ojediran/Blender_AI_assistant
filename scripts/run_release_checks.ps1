@@ -8,7 +8,7 @@ $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $PythonPath = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $RuffPath = Join-Path $ProjectRoot ".venv\Scripts\ruff.exe"
 $MypyPath = Join-Path $ProjectRoot ".venv\Scripts\mypy.exe"
-$ArchivePath = Join-Path $ProjectRoot "dist\blender_ai_assistant-0.1.3.zip"
+$ArchivePath = Join-Path $ProjectRoot "dist\blender_ai_assistant-0.1.4.zip"
 $ProfilePath = Join-Path $ProjectRoot ".test-profile-release-$PID"
 
 function Invoke-Checked {

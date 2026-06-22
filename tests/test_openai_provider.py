@@ -12,6 +12,7 @@ from extension.providers.openai import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_REASONING_EFFORT,
+    DEFAULT_TIMEOUT_SECONDS,
     OpenAIAPIError,
     OpenAIConfigurationError,
     OpenAIProvider,
@@ -72,7 +73,7 @@ class SequenceSession:
 
 
 class FailingSession:
-    def __init__(self, error: requests.RequestException) -> None:
+    def __init__(self, error: requests.exceptions.RequestException) -> None:
         self.error = error
         self.call_count = 0
 
@@ -148,6 +149,7 @@ def test_create_plan_returns_locally_validated_plan() -> None:
     )
     assert session.last_request is not None
     assert session.last_request["headers"]["Authorization"] == "Bearer test-key"
+    assert session.last_request["timeout"] == DEFAULT_TIMEOUT_SECONDS
 
 
 def test_payload_accepts_explicit_reasoning_effort() -> None:
@@ -288,14 +290,44 @@ def test_create_plan_reports_api_errors() -> None:
 
 
 def test_transport_timeout_fails_without_ambiguous_retry() -> None:
-    session = FailingSession(requests.Timeout("timed out"))
-    provider = OpenAIProvider("test-key", session=session)
+    session = FailingSession(requests.exceptions.Timeout("timed out"))
+    provider = OpenAIProvider("test-key", session=session, timeout_seconds=180.0)
 
-    with pytest.raises(OpenAIAPIError, match="before receiving a response") as captured:
+    with pytest.raises(OpenAIAPIError, match="180 seconds") as captured:
         provider.create_plan(make_request())
 
+    assert captured.value.error_code == "request_timeout"
     assert captured.value.retryable is False
     assert session.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("transport_error", "expected_code", "expected_message"),
+    [
+        (
+            requests.exceptions.ConnectionError("offline"),
+            "connection_error",
+            "Blender network access",
+        ),
+        (requests.exceptions.SSLError("certificate"), "tls_error", "TLS connection"),
+        (
+            requests.exceptions.RequestException("transport"),
+            "transport_error",
+            "connection settings",
+        ),
+    ],
+)
+def test_transport_failures_report_actionable_categories(
+    transport_error: requests.exceptions.RequestException,
+    expected_code: str,
+    expected_message: str,
+) -> None:
+    provider = OpenAIProvider("test-key", session=FailingSession(transport_error))
+
+    with pytest.raises(OpenAIAPIError, match=expected_message) as captured:
+        provider.create_plan(make_request())
+
+    assert captured.value.error_code == expected_code
 
 
 def test_transient_server_errors_stop_at_the_retry_budget() -> None:

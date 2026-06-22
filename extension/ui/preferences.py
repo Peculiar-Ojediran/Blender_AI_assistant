@@ -17,6 +17,7 @@ from ..providers.openai import (
     CUSTOM_MODEL_OPTION,
     DEFAULT_MODEL,
     DEFAULT_REASONING_EFFORT,
+    DEFAULT_TIMEOUT_SECONDS,
     OPENAI_MODEL_OPTIONS,
     resolve_model_name,
 )
@@ -75,9 +76,9 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         request_timeout: FloatProperty(
             name="Request Timeout",
             description="Maximum time to wait for an OpenAI response",
-            default=60.0,
+            default=DEFAULT_TIMEOUT_SECONDS,
             min=5.0,
-            max=300.0,
+            max=600.0,
             unit="TIME",
         )
         max_output_tokens: IntProperty(

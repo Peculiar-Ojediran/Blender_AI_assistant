@@ -6,14 +6,14 @@ it for approval, and applies only supported Blender operations.
 
 ## Current Release
 
-- Version: 0.1.3 MVP.
+- Version: 0.1.4 MVP.
 - Verified platform: Windows x64.
 - Verified Blender version: 5.1.0.
 - Provider: OpenAI Responses API.
 - Default development model: `gpt-5-nano` with low reasoning effort.
 - Models: GPT-5 Nano, GPT-5.4 Nano, GPT-5.4 Mini, GPT-5.5, or a custom model name.
 - Configurable plan limits: operations, targets per operation, and duplicate outputs.
-- Local release package after building: `dist/blender_ai_assistant-0.1.3.zip`.
+- Local release package after building: `dist/blender_ai_assistant-0.1.4.zip`.
 
 The archive contains all Python runtime dependencies. It does not require `pip`, a provider SDK, or
 a local bridge service on the user's machine. The generated `dist/` directory is intentionally not

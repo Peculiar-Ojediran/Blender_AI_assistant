@@ -107,8 +107,8 @@ module and verifies UI registration from the installed artifact rather than the 
 ```powershell
 & 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension validate .\extension
 & 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension build --source-dir .\extension --output-dir .\dist
-& 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension validate .\dist\blender_ai_assistant-0.1.3.zip
-.\.venv\Scripts\python.exe tests\verify_release_package.py .\dist\blender_ai_assistant-0.1.3.zip
+& 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension validate .\dist\blender_ai_assistant-0.1.4.zip
+.\.venv\Scripts\python.exe tests\verify_release_package.py .\dist\blender_ai_assistant-0.1.4.zip
 ```
 
 The source manifest references six pinned pure-Python wheels under `extension/wheels`. End users do
@@ -135,10 +135,10 @@ operating-system environment.
 
 ## Verified Setup
 
-Verified on June 21, 2026:
+Verified on June 22, 2026:
 
 - `pip check`: no broken requirements.
-- `pytest`: 99 configuration, dependency, provider, planning-pipeline, async-runtime, coordinator,
+- `pytest`: 102 configuration, dependency, provider, planning-pipeline, async-runtime, coordinator,
   execution-result, operation-contract, safety-policy, scene-context, and workflow-state tests
   passed; 10 billable live OpenAI tests skipped by default.
 - `ruff check .`: passed.
@@ -148,13 +148,15 @@ Verified on June 21, 2026:
   recovery, registration, and state tests: passed.
 - Blender safety checks for direct high-risk execution bypass, retained approval state, authoritative
   risk, and visible changed-data details: passed.
-- OpenAI token-usage parsing, malformed-usage fallback, bounded `Retry-After`, repair-call
-  aggregation, and Blender usage-state propagation: passed.
+- OpenAI token-usage parsing, malformed-usage fallback, bounded `Retry-After`, timeout/TLS/connection
+  classification, repair-call aggregation, and Blender usage-state propagation: passed.
 - Blender 5.1 controlled execution tests for all ten operations, every primitive and light variant,
   result references, deterministic naming, copy-on-write materials, deletion child preservation,
   complete preflight, stale rejection, and rollback: passed.
 - Deterministic simple, messy, and 1,000-object sample scenes: passed; the large-scene context
-  measured 0.034 seconds, 976 omissions, and 29,294 serialized characters on the verified machine.
+  measured 0.036 seconds, 976 omissions, and 29,294 serialized characters on the verified machine.
+- A targeted Blender-hosted GPT-5.5 request for `make a rubiks cube` returned a locally valid
+  44-operation high-risk plan in 40.14 seconds using 5,745 total tokens with the 180-second timeout.
 - Foreground Blender Undo interaction remains a manual check because background mode has no editor
   context; automatic tests verify operator undo registration and undo-availability state.
 - Built-ZIP installation, packaged-module import sweep, and fresh-process UI registration: passed
@@ -163,6 +165,6 @@ Verified on June 21, 2026:
 - Extension source and built archive validation: passed.
 - Extension archive build: passed.
 - Bundled-wheel references, archive secret/bytecode exclusions, and independent release-content
-  verification: passed; resulting archive size was 539,249 bytes.
+  verification: passed; resulting archive size was 539,666 bytes.
 - macOS, Linux, other Blender versions, and interactive foreground Undo remain explicit test-matrix
   gaps documented in `TEST_MATRIX.md`.

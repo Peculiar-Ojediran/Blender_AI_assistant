@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Blender AI Assistant",
     "author": "Blender AI Assistant Contributors",
-    "version": (0, 1, 3),
+    "version": (0, 1, 4),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar",
     "description": "Plan controlled Blender changes with OpenAI",

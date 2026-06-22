@@ -44,7 +44,8 @@ risk, and live-scene validation independently of the provider.
 
 ## Timeouts, Retries, and Failures
 
-Every request has a configurable positive timeout. HTTP `429`, `500`, `502`, `503`, and `504`
+Every request has a configurable positive timeout, defaulting to 180 seconds with a 600-second hard
+maximum. HTTP `429`, `500`, `502`, `503`, and `504`
 responses receive at most two retries by default. Retry delays use exponential backoff with jitter,
 honor numeric `Retry-After` values, and cap a server-requested delay at 30 seconds.
 

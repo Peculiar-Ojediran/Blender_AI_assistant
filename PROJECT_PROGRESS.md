@@ -485,3 +485,28 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   `blender_ai_assistant-0.1.3.zip` as the installable asset.
 - Verified GitHub reports the uploaded asset as 539,249 bytes with SHA-256 digest
   `c2ed9fff04d6073fe6c0d7ed43a0a2c17eb7163dccee560aec27c13023d71121`.
+
+## 2026-06-22 17:35:17 -04:00
+
+### Complex-Plan Timeout Bug Fixed
+
+- Investigated reports that prompts such as `make a rubiks cube` failed before receiving an OpenAI
+  response from Blender.
+- Confirmed the installed configuration used GPT-5.5, a 100-operation limit, 10,000 output tokens,
+  and the previous 60-second request timeout. A controlled reproduction took 55.39 seconds, leaving
+  insufficient margin once real Blender scene context was included.
+- Raised the default request timeout from 60 to 180 seconds and the selectable maximum from 300 to
+  600 seconds. The existing timeout property was unset, so upgrading adopts the new default without
+  overwriting a deliberately customized value.
+- Added distinct timeout, TLS, connection, and generic transport error categories with actionable UI
+  messages. Timeout failures remain non-retried to avoid an ambiguous duplicate billable request.
+- Added provider and Blender UI regression coverage for the new default, bounds, error categories,
+  and timeout/connection headlines.
+- Bumped the extension from 0.1.3 to 0.1.4 and updated installation, provider, troubleshooting,
+  development, and release documentation.
+- Verified 102 pytest tests with 10 standard live tests skipped, `pip check`, Ruff, Mypy across 57
+  source files, all three Blender 5.1 background suites, source/archive validation, bundled-wheel and
+  secret checks, and clean-profile installed-package imports plus UI registration.
+- Verified the original prompt through Blender with GPT-5.5: a valid 44-operation high-risk plan was
+  returned in 40.14 seconds using 5,745 tokens under the new 180-second timeout.
+- Built `dist/blender_ai_assistant-0.1.4.zip` as a 539,666-byte self-contained package.
