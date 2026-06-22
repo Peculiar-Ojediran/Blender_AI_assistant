@@ -464,3 +464,13 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   `main` branch and repository-local author identity.
 - Re-ran the complete non-billable release gate before publication: 99 tests passed, 10 live tests
   were skipped, and all Blender, package, secret, and clean-install checks passed.
+
+## 2026-06-21 22:26:08 -04:00
+
+### GitHub Publication Completed
+
+- Created a clean Git history with initial release commit `9f916a7` authored by Peculiar Ojediran.
+- Published the `main` branch to
+  `git@github.com:Peculiar-Ojediran/Blender_AI_assistant.git` and configured local upstream tracking.
+- Verified the remote branch resolves to the published commit and the working tree contains no
+  uncommitted source changes.
