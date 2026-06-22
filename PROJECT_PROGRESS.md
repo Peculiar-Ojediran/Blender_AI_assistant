@@ -510,3 +510,14 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified the original prompt through Blender with GPT-5.5: a valid 44-operation high-risk plan was
   returned in 40.14 seconds using 5,745 tokens under the new 180-second timeout.
 - Built `dist/blender_ai_assistant-0.1.4.zip` as a 539,666-byte self-contained package.
+
+## 2026-06-22 17:36:25 -04:00
+
+### Timeout Fix Released
+
+- Pushed timeout-fix commit `62e281c` to `main` and created annotated tag `v0.1.4` at that verified
+  commit.
+- Published `Blender AI Assistant v0.1.4` as the latest stable GitHub Release with the installable
+  `blender_ai_assistant-0.1.4.zip` asset.
+- Verified the 539,666-byte GitHub asset matches the local SHA-256 digest
+  `266a6a20b3cecaafab5af0b8efec10db12cd8418a40acea43a74ddd3641be21a`.
