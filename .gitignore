@@ -1,0 +1,17 @@
+.venv/
+.env
+.agents/
+.codex/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.test-profile-*/
+.coverage
+htmlcov/
+build/
+dist/
+*.blend[0-9]
+.DS_Store
+Thumbs.db

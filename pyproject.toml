@@ -1,0 +1,32 @@
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers"]
+cache_dir = "build/pytest-cache"
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "live_openai: opt-in test that makes a real billable OpenAI API request",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+check_untyped_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "fastjsonschema"
+ignore_missing_imports = true

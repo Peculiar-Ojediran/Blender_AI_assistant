@@ -1,0 +1,8 @@
+-r requirements-runtime.txt
+
+fake-bpy-module==20260501
+mypy==2.1.0
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.15.18
+types-requests==2.33.0.20260518

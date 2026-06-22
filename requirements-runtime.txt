@@ -1,0 +1,7 @@
+# Runtime dependencies bundled as cross-platform wheels in the extension archive.
+certifi==2026.6.17
+charset-normalizer==3.4.7
+fastjsonschema==2.21.1
+idna==3.18
+requests==2.32.3
+urllib3==2.7.0
