@@ -474,3 +474,14 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   `git@github.com:Peculiar-Ojediran/Blender_AI_assistant.git` and configured local upstream tracking.
 - Verified the remote branch resolves to the published commit and the working tree contains no
   uncommitted source changes.
+
+## 2026-06-21 22:46:08 -04:00
+
+### GitHub Release Published
+
+- Installed and authorized GitHub CLI for release management using the existing GitHub account.
+- Created annotated tag `v0.1.3` for verified commit `40eb074` and pushed the tag to GitHub.
+- Published `Blender AI Assistant v0.1.3` as the latest stable GitHub Release and attached
+  `blender_ai_assistant-0.1.3.zip` as the installable asset.
+- Verified GitHub reports the uploaded asset as 539,249 bytes with SHA-256 digest
+  `c2ed9fff04d6073fe6c0d7ed43a0a2c17eb7163dccee560aec27c13023d71121`.
