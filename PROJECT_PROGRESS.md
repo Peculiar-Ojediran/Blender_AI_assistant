@@ -521,3 +521,61 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   `blender_ai_assistant-0.1.4.zip` asset.
 - Verified the 539,666-byte GitHub asset matches the local SHA-256 digest
   `266a6a20b3cecaafab5af0b8efec10db12cd8418a40acea43a74ddd3641be21a`.
+
+## 2026-06-24 17:20:20 -04:00
+
+### Operation Contract Expanded
+
+- Added controlled operations for material property updates, collection creation, light property
+  updates, camera property updates, safe modifier creation, modifier property updates, text object
+  creation, and object visibility changes.
+- Preserved the existing safe-planning model by adding strict JSON schemas, local semantic
+  validation, target/result-reference checks, preflight simulation, rollback-aware execution, risk
+  metadata, and Blender execution coverage for the expanded operation set.
+- Followed the requested staged workflow: implemented the first five operations, ran the full
+  non-live release gate successfully, then implemented the remaining three operations.
+- Verified the final result with 112 pytest tests passing, 10 live OpenAI tests skipped, Ruff, Mypy,
+  Blender integration, controlled execution, sample scene checks, manifest/archive validation,
+  package verification, isolated archive install, and installed extension integration checks.
+
+## 2026-06-24 20:30:25 -04:00
+
+### High-Risk Asset And Mesh Operations Added
+
+- Added controlled high-risk operations for local asset import, local blend data link/append,
+  non-applied Boolean modifiers, mesh joining, and mesh separation.
+- Kept file access narrow: imports accept only local `.obj`, `.fbx`, `.gltf`, or `.glb` paths, blend
+  data loading accepts only local `.blend` files with explicit object or collection names, and URL
+  paths remain rejected.
+- Preserved rollback behavior by keeping Boolean operations non-applied and implementing join and
+  separate as generated replacement meshes with original-object deletion deferred until plan commit.
+- Added contract tests and Blender execution coverage using a generated OBJ asset and temporary
+  blend library file.
+- Verified 120 pytest tests with 10 live OpenAI tests skipped, Ruff, Mypy, Blender integration,
+  controlled execution, sample scene checks, manifest/archive validation, package verification,
+  isolated archive install, and installed extension integration checks.
+
+## 2026-06-24 21:30:56 -04:00
+
+### HTTPS Asset Import Added
+
+- Extended `IMPORT_ASSET` so asset sources can be either local paths or HTTPS URLs for `.obj`,
+  `.fbx`, `.gltf`, and `.glb` files.
+- Kept the URL import path controlled: HTTP, FTP, `file://`, and other URL schemes are rejected,
+  downloads are capped at 50 MB, temporary download files are removed after import, and
+  `LINK_OR_APPEND_BLEND_DATA` remains local `.blend` only.
+- Updated provider instructions, controlled-operation documentation, and operation-contract tests
+  for the HTTPS import behavior.
+
+## 2026-06-24 22:05:30 -04:00
+
+### URL Import Schema Compatibility Fixed
+
+- Fixed OpenAI Structured Outputs rejecting URL import plans with `Invalid JSON schema: regex
+  lookaround is not supported`.
+- Removed lookaround-based URL/local-path regex checks from the provider-facing schema and kept the
+  same URL policy in local semantic validation.
+- Added regression coverage to ensure the provider schema does not include regex lookarounds.
+- Verified 122 pytest tests with 10 live OpenAI tests skipped, Ruff, Mypy, Blender integration,
+  controlled execution, sample scene checks, manifest/archive validation, package verification,
+  isolated archive install, and installed extension integration checks.

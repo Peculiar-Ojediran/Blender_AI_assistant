@@ -120,6 +120,14 @@ def _plan_references(plan: OperationPlan) -> tuple[tuple[str, TargetKind], ...]:
 def _operation_references(operation: Operation) -> tuple[tuple[str, TargetKind], ...]:
     references = [(target_id, TargetKind.OBJECT) for target_id in operation.target_ids]
 
+    target_id = operation.payload.get("target_id")
+    if isinstance(target_id, str):
+        references.append((target_id, TargetKind.OBJECT))
+
+    cutter_id = operation.payload.get("cutter_id")
+    if isinstance(cutter_id, str):
+        references.append((cutter_id, TargetKind.OBJECT))
+
     material_id = operation.payload.get("material_id")
     if isinstance(material_id, str):
         references.append((material_id, TargetKind.MATERIAL))
@@ -127,5 +135,9 @@ def _operation_references(operation: Operation) -> tuple[tuple[str, TargetKind],
     collection_id = operation.payload.get("collection_id")
     if isinstance(collection_id, str):
         references.append((collection_id, TargetKind.COLLECTION))
+
+    parent_collection_id = operation.payload.get("parent_collection_id")
+    if isinstance(parent_collection_id, str):
+        references.append((parent_collection_id, TargetKind.COLLECTION))
 
     return tuple(references)

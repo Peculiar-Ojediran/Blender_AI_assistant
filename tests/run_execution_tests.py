@@ -15,6 +15,7 @@ from extension.context import (  # noqa: E402
 )
 from extension.operations import (  # noqa: E402
     ExecutionPreflightError,
+    OperationLimits,
     PlanExecutionError,
     execute_plan,
     validate_operation_plan,
@@ -39,11 +40,29 @@ def ready_plan(snapshot_id: str, operations: list[dict[str, Any]]) -> Any:
             "operations": operations,
         },
         expected_snapshot_id=snapshot_id,
+        limits=OperationLimits(max_operations_per_plan=40),
     )
 
 
 scene = cast(Any, bpy.context.scene)
 data: Any = cast(Any, bpy.data)
+asset_dir = PROJECT_ROOT / "build" / "execution_assets"
+asset_dir.mkdir(parents=True, exist_ok=True)
+obj_asset_path = asset_dir / "exec_import.obj"
+obj_asset_path.write_text(
+    "\n".join(
+        (
+            "o ExecObjAsset",
+            "v 0 0 0",
+            "v 1 0 0",
+            "v 0 1 0",
+            "f 1 2 3",
+            "",
+        )
+    ),
+    encoding="utf-8",
+)
+
 source = data.objects["Cube"]
 source.name = "ExecSource"
 
@@ -67,29 +86,74 @@ delete_child.parent = delete_parent
 delete_child.location = (1.0, 0.0, 0.0)
 child_world_before = delete_child.matrix_world.copy()
 
+boolean_target_mesh = source.data.copy()
+boolean_target = data.objects.new("ExecBooleanTarget", boolean_target_mesh)
+scene.collection.objects.link(boolean_target)
+boolean_cutter_mesh = source.data.copy()
+boolean_cutter = data.objects.new("ExecBooleanCutter", boolean_cutter_mesh)
+scene.collection.objects.link(boolean_cutter)
+boolean_cutter.location.x = 0.5
+
+join_a = data.objects.new("ExecJoinA", source.data.copy())
+scene.collection.objects.link(join_a)
+join_b = data.objects.new("ExecJoinB", source.data.copy())
+scene.collection.objects.link(join_b)
+join_b.location.x = 3.0
+
+separate_mesh = source.data.copy()
+separate_target = data.objects.new("ExecSeparateSource", separate_mesh)
+scene.collection.objects.link(separate_target)
+separate_a = data.materials.new("ExecSeparateA")
+separate_b = data.materials.new("ExecSeparateB")
+separate_mesh.materials.append(separate_a)
+separate_mesh.materials.append(separate_b)
+for index, polygon in enumerate(separate_mesh.polygons):
+    polygon.material_index = index % 2
+
+blend_asset = data.objects.new("ExecBlendAsset", source.data.copy())
+scene.collection.objects.link(blend_asset)
+blend_asset_path = asset_dir / "exec_library.blend"
+cast(Any, bpy.ops.wm).save_as_mainfile(filepath=str(blend_asset_path))
+data.objects.remove(blend_asset, do_unlink=True)
+working_scene_path = asset_dir / "exec_working.blend"
+cast(Any, bpy.ops.wm).save_as_mainfile(filepath=str(working_scene_path))
+delete_child = data.objects["ExecDeleteChild"]
+child_world_before = delete_child.matrix_world.copy()
+
 snapshot = read_scene_context(
     bpy.context,
     ContextOptions(
         scope=ContextScope.SCENE,
-        detailed_object_budget=20,
-        summary_object_budget=20,
-        material_budget=20,
-        collection_budget=20,
+        detailed_object_budget=40,
+        summary_object_budget=40,
+        material_budget=40,
+        collection_budget=40,
     ),
 )
 source_id = target_id(snapshot, "ExecSource", TargetKind.OBJECT)
 delete_parent_id = target_id(snapshot, "ExecDeleteParent", TargetKind.OBJECT)
 destination_id = target_id(snapshot, "ExecDestination", TargetKind.COLLECTION)
+boolean_target_id = target_id(snapshot, "ExecBooleanTarget", TargetKind.OBJECT)
+boolean_cutter_id = target_id(snapshot, "ExecBooleanCutter", TargetKind.OBJECT)
+join_a_id = target_id(snapshot, "ExecJoinA", TargetKind.OBJECT)
+join_b_id = target_id(snapshot, "ExecJoinB", TargetKind.OBJECT)
+separate_target_id = target_id(snapshot, "ExecSeparateSource", TargetKind.OBJECT)
 
 plan = ready_plan(
     snapshot.snapshot_id,
     [
         {
+            "operation_id": "create_collection",
+            "type": "CREATE_COLLECTION",
+            "name": "ExecGeneratedCollection",
+            "parent_collection_id": destination_id,
+        },
+        {
             "operation_id": "create_mesh",
             "type": "CREATE_PRIMITIVE",
             "primitive": "cube",
             "name": "ExecCreated",
-            "collection_id": destination_id,
+            "collection_id": "result:create_collection",
             "location": [0.0, 0.0, 0.0],
             "rotation_euler": [0.0, 0.0, 0.0],
             "scale": [1.0, 1.0, 1.0],
@@ -108,6 +172,15 @@ plan = ready_plan(
             "type": "ASSIGN_MATERIAL",
             "target_ids": ["result:create_mesh", source_id],
             "material_id": "result:create_material",
+        },
+        {
+            "operation_id": "tune_material",
+            "type": "SET_MATERIAL_PROPERTIES",
+            "material_id": "result:create_material",
+            "base_color": [0.9, 0.1, 0.2],
+            "metallic": 0.2,
+            "roughness": 0.8,
+            "alpha": 1.0,
         },
         {
             "operation_id": "move_created",
@@ -139,6 +212,14 @@ plan = ready_plan(
             "size": 3.0,
         },
         {
+            "operation_id": "tune_light",
+            "type": "SET_LIGHT_PROPERTIES",
+            "target_ids": ["result:add_light"],
+            "color": [0.5, 0.6, 1.0],
+            "energy": 400.0,
+            "size": 2.0,
+        },
+        {
             "operation_id": "add_camera",
             "type": "ADD_CAMERA",
             "name": "ExecCamera",
@@ -147,6 +228,108 @@ plan = ready_plan(
             "rotation_euler": [1.0, 0.0, 0.8],
             "focal_length": 55.0,
             "make_active": True,
+        },
+        {
+            "operation_id": "tune_camera",
+            "type": "SET_CAMERA_PROPERTIES",
+            "target_ids": ["result:add_camera"],
+            "focal_length": 35.0,
+            "make_active": True,
+        },
+        {
+            "operation_id": "add_bevel",
+            "type": "ADD_MODIFIER",
+            "target_ids": ["result:create_mesh"],
+            "modifier_type": "bevel",
+            "name": "Exec Bevel",
+            "width": 0.15,
+            "segments": 2,
+            "thickness": None,
+            "count": None,
+            "relative_offset": None,
+            "levels": None,
+            "axis": None,
+        },
+        {
+            "operation_id": "tune_bevel",
+            "type": "SET_MODIFIER_PROPERTIES",
+            "target_ids": ["result:create_mesh"],
+            "modifier_name": "Exec Bevel",
+            "width": 0.25,
+            "segments": 3,
+            "thickness": None,
+            "count": None,
+            "relative_offset": None,
+            "levels": None,
+            "axis": None,
+        },
+        {
+            "operation_id": "create_text",
+            "type": "CREATE_TEXT_OBJECT",
+            "name": "ExecLabel",
+            "collection_id": "result:create_collection",
+            "body": "AI Label",
+            "location": [0.0, 0.0, 2.0],
+            "rotation_euler": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "align_x": "CENTER",
+            "align_y": "CENTER",
+            "size": 1.25,
+            "extrude": 0.05,
+        },
+        {
+            "operation_id": "hide_created",
+            "type": "SET_OBJECT_VISIBILITY",
+            "target_ids": ["result:create_mesh"],
+            "viewport_visible": False,
+            "render_visible": True,
+        },
+        {
+            "operation_id": "import_asset",
+            "type": "IMPORT_ASSET",
+            "filepath": str(obj_asset_path),
+            "format": "obj",
+            "collection_id": destination_id,
+            "name_prefix": "ExecImport",
+            "location": [0.0, 3.0, 0.0],
+            "rotation_euler": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+        },
+        {
+            "operation_id": "append_blend_asset",
+            "type": "LINK_OR_APPEND_BLEND_DATA",
+            "filepath": str(blend_asset_path),
+            "mode": "append",
+            "datablock_type": "object",
+            "datablock_names": ["ExecBlendAsset"],
+            "collection_id": destination_id,
+            "name_prefix": "ExecAppend",
+        },
+        {
+            "operation_id": "boolean_target",
+            "type": "BOOLEAN_OPERATION",
+            "target_id": boolean_target_id,
+            "cutter_id": boolean_cutter_id,
+            "boolean_operation": "difference",
+            "solver": "exact",
+            "apply": False,
+            "modifier_name": "Exec Boolean",
+            "hide_cutter": True,
+        },
+        {
+            "operation_id": "join_meshes",
+            "type": "JOIN_OBJECTS",
+            "target_ids": [join_a_id, join_b_id],
+            "new_name": "ExecJoined",
+            "collection_id": destination_id,
+        },
+        {
+            "operation_id": "separate_mesh",
+            "type": "SEPARATE_OBJECTS",
+            "target_ids": [separate_target_id],
+            "mode": "by_material",
+            "name_prefix": "ExecPart",
+            "collection_id": destination_id,
         },
         {
             "operation_id": "rename_source",
@@ -169,7 +352,7 @@ plan = ready_plan(
 )
 
 result = execute_plan(bpy.context, plan, snapshot)
-assert result.completed_operations == 10
+assert result.completed_operations == 23
 assert not result.partial
 assert not result.rolled_back
 assert result.changed_count >= 8
@@ -177,13 +360,48 @@ assert result.changed_count >= 8
 created = data.objects["ExecCreated"]
 material = data.materials["ExecMaterial"]
 renamed = data.objects["ExecRenamed"]
+generated_collection = data.collections["ExecGeneratedCollection"]
 assert tuple(round(float(value), 4) for value in created.location) == (1.0, 0.0, 0.0)
 assert tuple(round(float(value), 4) for value in created.scale) == (2.0, 1.0, 1.0)
 assert created.data.materials[0] == material
+assert generated_collection.objects.get(created.name) == created
+assert round(float(created.modifiers["Exec Bevel"].width), 4) == 0.25
+assert int(created.modifiers["Exec Bevel"].segments) == 3
+assert bool(created.hide_viewport)
+assert not bool(created.hide_render)
+text = data.objects["ExecLabel"]
+assert text.type == "FONT"
+assert text.data.body == "AI Label"
+assert round(float(text.data.size), 4) == 1.25
+assert round(float(text.data.extrude), 4) == 0.05
+assert generated_collection.objects.get(text.name) == text
+imported = [item for item in scene.objects if item.name.startswith("ExecImport_")]
+assert imported
+assert tuple(round(float(value), 4) for value in imported[0].location) == (0.0, 3.0, 0.0)
+assert destination.objects.get(imported[0].name) == imported[0]
+appended = data.objects["ExecAppend_ExecBlendAsset"]
+assert destination.objects.get(appended.name) == appended
+assert data.objects["ExecBooleanTarget"].modifiers["Exec Boolean"].operation == "DIFFERENCE"
+assert bool(data.objects["ExecBooleanCutter"].hide_viewport)
+assert data.objects.get("ExecJoinA") is None
+assert data.objects.get("ExecJoinB") is None
+joined = data.objects["ExecJoined"]
+assert destination.objects.get(joined.name) == joined
+assert len(joined.data.polygons) >= 12
+assert data.objects.get("ExecSeparateSource") is None
+parts = [item for item in scene.objects if item.name.startswith("ExecPart_ExecSeparateSource_")]
+assert len(parts) == 2
+assert all(destination.objects.get(item.name) == item for item in parts)
 assert renamed.data != shared.data
 assert renamed.data.materials[0] == material
 assert old_material in shared.data.materials[:]
 assert material not in shared.data.materials[:]
+assert tuple(round(float(value), 4) for value in material.diffuse_color) == (
+    0.9,
+    0.1,
+    0.2,
+    1.0,
+)
 assert tuple(collection.name for collection in renamed.users_collection) == (
     "ExecDestination",
 )
@@ -198,12 +416,19 @@ assert round(float(second_duplicate.location.y), 4) == 2.0
 light = data.objects["ExecLight"]
 camera = data.objects["ExecCamera"]
 assert light.data.type == "AREA"
-assert round(float(light.data.energy), 4) == 800.0
+assert round(float(light.data.energy), 4) == 400.0
+assert tuple(round(float(value), 4) for value in light.data.color) == (0.5, 0.6, 1.0)
+assert round(float(light.data.size), 4) == 2.0
 assert scene.camera == camera
-assert round(float(camera.data.lens), 4) == 55.0
+assert round(float(camera.data.lens), 4) == 35.0
 assert data.objects.get("ExecDeleteParent") is None
 assert delete_child.parent is None
-assert delete_child.matrix_world == child_world_before
+for row in range(4):
+    for column in range(4):
+        assert round(float(delete_child.matrix_world[row][column]), 4) == round(
+            float(child_world_before[row][column]),
+            4,
+        )
 
 variant_snapshot = read_scene_context(
     bpy.context,

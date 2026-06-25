@@ -19,6 +19,9 @@ _RESULT_KINDS = {
     OperationType.CREATE_MATERIAL: "material",
     OperationType.ADD_LIGHT: "object",
     OperationType.ADD_CAMERA: "object",
+    OperationType.CREATE_COLLECTION: "collection",
+    OperationType.CREATE_TEXT_OBJECT: "object",
+    OperationType.JOIN_OBJECTS: "object",
 }
 
 
@@ -109,6 +112,91 @@ def _validate_operation_semantics(
                     "SET_TRANSFORM must change location, rotation, or scale."
                 )
 
+        if operation_type is OperationType.SET_MATERIAL_PROPERTIES:
+            material_values = (
+                operation["base_color"],
+                operation["metallic"],
+                operation["roughness"],
+                operation["alpha"],
+            )
+            if all(value is None for value in material_values):
+                raise OperationContractError(
+                    "SET_MATERIAL_PROPERTIES must change at least one material property."
+                )
+
+        if operation_type is OperationType.SET_LIGHT_PROPERTIES:
+            light_values = (
+                operation["color"],
+                operation["energy"],
+                operation["size"],
+            )
+            if all(value is None for value in light_values):
+                raise OperationContractError(
+                    "SET_LIGHT_PROPERTIES must change at least one light property."
+                )
+
+        if operation_type is OperationType.SET_CAMERA_PROPERTIES:
+            camera_values = (
+                operation["focal_length"],
+                operation["make_active"],
+            )
+            if all(value is None for value in camera_values):
+                raise OperationContractError(
+                    "SET_CAMERA_PROPERTIES must change at least one camera property."
+                )
+
+        if operation_type is OperationType.SET_MODIFIER_PROPERTIES:
+            modifier_values = (
+                operation["width"],
+                operation["segments"],
+                operation["thickness"],
+                operation["count"],
+                operation["relative_offset"],
+                operation["levels"],
+                operation["axis"],
+            )
+            if all(value is None for value in modifier_values):
+                raise OperationContractError(
+                    "SET_MODIFIER_PROPERTIES must change at least one modifier property."
+                )
+
+        if operation_type is OperationType.SET_OBJECT_VISIBILITY:
+            visibility_values = (
+                operation["viewport_visible"],
+                operation["render_visible"],
+            )
+            if all(value is None for value in visibility_values):
+                raise OperationContractError(
+                    "SET_OBJECT_VISIBILITY must change viewport or render visibility."
+                )
+
+        if operation_type is OperationType.IMPORT_ASSET:
+            _validate_file_extension(
+                operation["filepath"],
+                {f".{operation['format']}"},
+                "IMPORT_ASSET",
+            )
+
+        if operation_type is OperationType.LINK_OR_APPEND_BLEND_DATA:
+            _validate_file_extension(
+                operation["filepath"],
+                {".blend"},
+                "LINK_OR_APPEND_BLEND_DATA",
+            )
+            names = operation["datablock_names"]
+            if len(names) != len(set(names)):
+                raise OperationContractError(
+                    "LINK_OR_APPEND_BLEND_DATA datablock names must be unique."
+                )
+
+        if (
+            operation_type is OperationType.BOOLEAN_OPERATION
+            and operation["target_id"] == operation["cutter_id"]
+        ):
+            raise OperationContractError(
+                "BOOLEAN_OPERATION target and cutter must be different objects."
+            )
+
         scale = operation.get("scale")
         if isinstance(scale, list) and any(abs(component) < 1e-9 for component in scale):
             raise OperationContractError("Scale components cannot be zero.")
@@ -151,9 +239,25 @@ def _validate_result_references(
         (rename["target_id"], "object") for rename in operation.get("renames", [])
     )
 
+    target_id = operation.get("target_id")
+    if isinstance(target_id, str):
+        references.append((target_id, "object"))
+
+    cutter_id = operation.get("cutter_id")
+    if isinstance(cutter_id, str):
+        references.append((cutter_id, "object"))
+
     material_id = operation.get("material_id")
     if isinstance(material_id, str):
         references.append((material_id, "material"))
+
+    collection_id = operation.get("collection_id")
+    if isinstance(collection_id, str):
+        references.append((collection_id, "collection"))
+
+    parent_collection_id = operation.get("parent_collection_id")
+    if isinstance(parent_collection_id, str):
+        references.append((parent_collection_id, "collection"))
 
     for reference, expected_kind in references:
         if not reference.startswith(RESULT_REFERENCE_PREFIX):
@@ -168,6 +272,25 @@ def _validate_result_references(
             raise OperationContractError(
                 f"Result reference {reference} produces {actual_kind}, not {expected_kind}."
             )
+
+
+def _validate_file_extension(
+    filepath: str,
+    allowed_suffixes: set[str],
+    operation_type: str,
+) -> None:
+    normalized = filepath.lower()
+    is_url = "://" in normalized
+    if operation_type == "IMPORT_ASSET":
+        if is_url and not normalized.startswith("https://"):
+            raise OperationContractError("IMPORT_ASSET URL sources must use HTTPS.")
+    elif is_url:
+        raise OperationContractError(f"{operation_type} only accepts local file paths.")
+    if not any(normalized.endswith(suffix) for suffix in allowed_suffixes):
+        suffixes = ", ".join(sorted(allowed_suffixes))
+        raise OperationContractError(
+            f"{operation_type} file path must end with one of: {suffixes}."
+        )
 
 
 def _reject_non_finite_numbers(value: Any, path: str = "plan") -> None:

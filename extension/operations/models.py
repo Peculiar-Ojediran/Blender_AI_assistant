@@ -22,6 +22,19 @@ class OperationType(StrEnum):
     ADD_CAMERA = "ADD_CAMERA"
     RENAME_OBJECTS = "RENAME_OBJECTS"
     MOVE_TO_COLLECTION = "MOVE_TO_COLLECTION"
+    SET_MATERIAL_PROPERTIES = "SET_MATERIAL_PROPERTIES"
+    CREATE_COLLECTION = "CREATE_COLLECTION"
+    SET_LIGHT_PROPERTIES = "SET_LIGHT_PROPERTIES"
+    SET_CAMERA_PROPERTIES = "SET_CAMERA_PROPERTIES"
+    ADD_MODIFIER = "ADD_MODIFIER"
+    SET_MODIFIER_PROPERTIES = "SET_MODIFIER_PROPERTIES"
+    CREATE_TEXT_OBJECT = "CREATE_TEXT_OBJECT"
+    SET_OBJECT_VISIBILITY = "SET_OBJECT_VISIBILITY"
+    IMPORT_ASSET = "IMPORT_ASSET"
+    LINK_OR_APPEND_BLEND_DATA = "LINK_OR_APPEND_BLEND_DATA"
+    BOOLEAN_OPERATION = "BOOLEAN_OPERATION"
+    JOIN_OBJECTS = "JOIN_OBJECTS"
+    SEPARATE_OBJECTS = "SEPARATE_OBJECTS"
 
 
 class RiskLevel(StrEnum):
@@ -40,17 +53,24 @@ class Operation:
     def target_ids(self) -> tuple[str, ...]:
         raw_targets = self.payload.get("target_ids")
         if isinstance(raw_targets, tuple):
-            return tuple(value for value in raw_targets if isinstance(value, str))
+            targets = [value for value in raw_targets if isinstance(value, str)]
+        else:
+            targets = []
 
         renames = self.payload.get("renames")
         if isinstance(renames, tuple):
-            return tuple(
+            targets.extend(
                 rename["target_id"]
                 for rename in renames
                 if isinstance(rename, Mapping) and isinstance(rename.get("target_id"), str)
             )
 
-        return ()
+        for key in ("target_id", "cutter_id"):
+            value = self.payload.get(key)
+            if isinstance(value, str):
+                targets.append(value)
+
+        return tuple(dict.fromkeys(targets))
 
 
 @dataclass(frozen=True, slots=True)

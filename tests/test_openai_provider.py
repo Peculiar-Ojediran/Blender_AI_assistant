@@ -128,7 +128,18 @@ def test_payload_uses_structured_outputs_without_storage() -> None:
         "schema": OPERATION_PLAN_SCHEMA,
     }
     assert "test-key" not in json.dumps(payload)
-    assert "File reads" in payload["instructions"]
+    assert "IMPORT_ASSET" in payload["instructions"]
+    assert "LINK_OR_APPEND_BLEND_DATA" in payload["instructions"]
+    assert "HTTPS" in payload["instructions"]
+    assert "outside IMPORT_ASSET" in payload["instructions"]
+
+
+def test_provider_schema_avoids_regex_lookarounds() -> None:
+    schema_text = json.dumps(OPERATION_PLAN_SCHEMA)
+
+    assert "(?!" not in schema_text
+    assert "(?=" not in schema_text
+    assert "(?<" not in schema_text
 
 
 def test_create_plan_returns_locally_validated_plan() -> None:

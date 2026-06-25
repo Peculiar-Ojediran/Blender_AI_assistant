@@ -45,8 +45,22 @@ Every operation requires a unique `operation_id` and an exact `type`. Unknown fi
 | `ADD_CAMERA` | name, collection ID or null, transform, focal length, active flag | Low |
 | `RENAME_OBJECTS` | explicit target ID and new-name pairs | Medium |
 | `MOVE_TO_COLLECTION` | target IDs, collection ID | Medium |
+| `SET_MATERIAL_PROPERTIES` | material ID, nullable base color/metallic/roughness/alpha | Low |
+| `CREATE_COLLECTION` | name, parent collection ID or null | Low |
+| `SET_LIGHT_PROPERTIES` | target IDs, nullable color/energy/size | Low |
+| `SET_CAMERA_PROPERTIES` | target IDs, nullable focal length/active flag | Low |
+| `ADD_MODIFIER` | target IDs, supported modifier type, name, nullable supported settings | Medium |
+| `SET_MODIFIER_PROPERTIES` | target IDs, modifier name, nullable supported settings | Medium |
+| `CREATE_TEXT_OBJECT` | name, collection ID or null, body, transform, alignment, size, extrude | Low |
+| `SET_OBJECT_VISIBILITY` | target IDs, nullable viewport/render visibility flags | Low |
+| `IMPORT_ASSET` | local filepath or HTTPS URL, format, collection ID or null, name prefix or null, transform | High |
+| `LINK_OR_APPEND_BLEND_DATA` | local blend filepath, mode, datablock type/names, collection ID or null, name prefix or null | High |
+| `BOOLEAN_OPERATION` | target ID, cutter ID, operation, solver, non-applied flag, modifier name, hide-cutter flag | High |
+| `JOIN_OBJECTS` | target IDs, new object name, collection ID or null | High |
+| `SEPARATE_OBJECTS` | target IDs, mode, name prefix, collection ID or null | High |
 
-Modifiers, edit-mode mesh changes, geometry nodes, animation, rigging, file access, imports, and arbitrary Python are not part of the MVP contract.
+Edit-mode mesh editing, geometry nodes, animation, rigging, downloads outside `IMPORT_ASSET`,
+arbitrary file access, and arbitrary Python are not part of the MVP contract.
 
 ## Reference Rules
 
@@ -56,10 +70,12 @@ Existing targets use typed IDs from the submitted context snapshot:
 - Materials: `mat_0001` and later numeric IDs.
 - Collections: `col_0001` and later numeric IDs.
 
-`CREATE_PRIMITIVE`, `CREATE_MATERIAL`, `ADD_LIGHT`, and `ADD_CAMERA` each produce one addressable
-result. A later operation in the same plan may reference that result as
+`CREATE_PRIMITIVE`, `CREATE_MATERIAL`, `ADD_LIGHT`, `ADD_CAMERA`, `CREATE_COLLECTION`,
+`CREATE_TEXT_OBJECT`, and `JOIN_OBJECTS` each produce one addressable result. A later operation in
+the same plan may reference that result as
 `result:<operation_id>`. Forward references and result-kind mismatches are rejected. Duplicate
-operations produce multiple objects and therefore do not expose one result reference in the MVP.
+operations, imports, blend data loading, and separate operations can produce multiple objects and
+therefore do not expose one result reference in the MVP.
 
 The plan must echo the submitted context `snapshot_id`. The coordinator must validate that value
 against its retained snapshot. Existing targets must then pass kind, Blender `session_uid`, and
@@ -96,6 +112,30 @@ These rules are implemented by the main-thread executor:
   collisions with non-target objects reject the plan.
 - `MOVE_TO_COLLECTION` links each target to the destination and unlinks it from every other
   collection, leaving exactly one collection membership.
+- `SET_MATERIAL_PROPERTIES` updates only provided material fields and leaves null fields unchanged.
+- `CREATE_COLLECTION` creates one collection under the referenced parent collection or scene root.
+  The requested name must be available.
+- `SET_LIGHT_PROPERTIES` updates only provided light fields. `size` keeps the same meaning used by
+  `ADD_LIGHT`.
+- `SET_CAMERA_PROPERTIES` updates focal length and can make a referenced camera active.
+- `ADD_MODIFIER` adds one supported, non-applied modifier: bevel, solidify, mirror, subdivision
+  surface, array, or weighted normal.
+- `SET_MODIFIER_PROPERTIES` updates supported fields on an existing named modifier.
+- `CREATE_TEXT_OBJECT` creates one Blender text object with explicit transform, alignment, size,
+  and extrusion values.
+- `SET_OBJECT_VISIBILITY` sets viewport and/or render visibility while leaving null fields
+  unchanged.
+- `IMPORT_ASSET` imports local or HTTPS `.obj`, `.fbx`, `.gltf`, or `.glb` files. HTTP, FTP,
+  `file://`, and other URL schemes are rejected. URL downloads are bounded before import.
+  Imported objects are moved to the requested collection and receive the requested transform.
+- `LINK_OR_APPEND_BLEND_DATA` links or appends explicit object or collection names from a local
+  `.blend` file. It cannot browse or import arbitrary datablock types.
+- `BOOLEAN_OPERATION` creates a non-applied Boolean modifier between two mesh objects. Applying the
+  Boolean is deliberately unsupported so the transaction can remain rollback-safe.
+- `JOIN_OBJECTS` creates one generated mesh object from explicit mesh targets and defers deletion
+  of the original targets until the rest of the plan succeeds.
+- `SEPARATE_OBJECTS` creates generated mesh objects from explicit mesh targets by material or loose
+  parts and defers deletion of the original targets until the rest of the plan succeeds.
 
 ## Contract Limits
 
@@ -116,6 +156,11 @@ These rules are implemented by the main-thread executor:
 - Numeric fields are bounded and non-finite values are rejected.
 - Scale components cannot be zero.
 - `SET_TRANSFORM` must change at least one transform component.
+- Property update operations must change at least one supported field.
+- File operations require an allowed file extension. URL asset imports must use HTTPS, while blend
+  link/append remains local-file only.
+- Boolean operations require distinct mesh target and cutter objects and cannot be applied.
+- Join and separate operations require mesh targets.
 - Unknown fields are rejected at every object level.
 
 ## Validation Stages

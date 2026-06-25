@@ -57,8 +57,15 @@ def affected_object_count(plan: OperationPlan) -> int:
             OperationType.CREATE_PRIMITIVE,
             OperationType.ADD_LIGHT,
             OperationType.ADD_CAMERA,
+            OperationType.CREATE_TEXT_OBJECT,
+            OperationType.JOIN_OBJECTS,
+            OperationType.IMPORT_ASSET,
         }:
             created_objects += 1
+        elif operation.type is OperationType.LINK_OR_APPEND_BLEND_DATA:
+            created_objects += len(operation.payload["datablock_names"])
         elif operation.type is OperationType.DUPLICATE_OBJECTS:
             created_objects += len(operation.target_ids) * int(operation.payload["count"])
+        elif operation.type is OperationType.SEPARATE_OBJECTS:
+            created_objects += len(operation.target_ids)
     return len(existing_targets) + created_objects
