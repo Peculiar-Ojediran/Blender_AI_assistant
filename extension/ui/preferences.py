@@ -13,6 +13,12 @@ from ..operations import (
     HARD_MAX_TARGETS_PER_OPERATION,
     OperationLimits,
 )
+from ..providers.nvidia import (
+    DEFAULT_NVIDIA_MODEL,
+    NVIDIA_DEFAULT_BASE_URL,
+    NVIDIA_MODEL_OPTIONS,
+    resolve_nvidia_model_name,
+)
 from ..providers.openai import (
     CUSTOM_MODEL_OPTION,
     DEFAULT_MODEL,
@@ -20,6 +26,13 @@ from ..providers.openai import (
     DEFAULT_TIMEOUT_SECONDS,
     OPENAI_MODEL_OPTIONS,
     resolve_model_name,
+)
+from ..providers.registry import (
+    PROVIDER_ITEMS,
+    PROVIDER_NVIDIA,
+    PROVIDER_OPENAI,
+    provider_api_key_name,
+    provider_label,
 )
 from .properties import CONTEXT_SCOPE_ITEMS
 
@@ -30,8 +43,12 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
     bl_idname = ADDON_ID
 
     if TYPE_CHECKING:
+        provider_choice: str
         model_choice: str
         custom_model: str
+        nvidia_model_choice: str
+        custom_nvidia_model: str
+        nvidia_base_url: str
         reasoning_effort: str
         session_api_key: str
         request_timeout: float
@@ -46,6 +63,11 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         max_operation_targets: int
         max_duplicate_objects: int
     else:
+        provider_choice: EnumProperty(
+            name="Provider",
+            items=PROVIDER_ITEMS,
+            default=PROVIDER_OPENAI,
+        )
         model_choice: EnumProperty(
             name="Model",
             items=(
@@ -59,6 +81,25 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
             default=DEFAULT_MODEL,
         )
         custom_model: StringProperty(name="Custom Model", maxlen=128)
+        nvidia_model_choice: EnumProperty(
+            name="NVIDIA Model",
+            items=(
+                *NVIDIA_MODEL_OPTIONS,
+                (
+                    CUSTOM_MODEL_OPTION,
+                    "Custom",
+                    "Use another NVIDIA NIM model name",
+                ),
+            ),
+            default=DEFAULT_NVIDIA_MODEL,
+        )
+        custom_nvidia_model: StringProperty(name="Custom NVIDIA Model", maxlen=128)
+        nvidia_base_url: StringProperty(
+            name="NVIDIA Base URL",
+            description="Base URL for NVIDIA NIM, without /chat/completions",
+            default=NVIDIA_DEFAULT_BASE_URL,
+            maxlen=256,
+        )
         reasoning_effort: EnumProperty(
             name="Reasoning Effort",
             items=(
@@ -75,7 +116,7 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         )
         request_timeout: FloatProperty(
             name="Request Timeout",
-            description="Maximum time to wait for an OpenAI response",
+            description="Maximum time to wait for an AI provider response",
             default=DEFAULT_TIMEOUT_SECONDS,
             min=5.0,
             max=600.0,
@@ -138,18 +179,24 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
 
         provider = layout.column(align=True)
         provider.label(text="Provider", icon="NETWORK_DRIVE")
-        provider.label(text="OpenAI")
-        provider.prop(self, "model_choice")
-        if self.model_choice == CUSTOM_MODEL_OPTION:
-            provider.prop(self, "custom_model")
-        provider.prop(self, "reasoning_effort")
+        provider.prop(self, "provider_choice", text="")
+        if self.provider_choice == PROVIDER_NVIDIA:
+            provider.prop(self, "nvidia_model_choice", text="Model")
+            if self.nvidia_model_choice_is_custom:
+                provider.prop(self, "custom_nvidia_model", text="Custom Model")
+            provider.prop(self, "nvidia_base_url")
+        else:
+            provider.prop(self, "model_choice")
+            if self.model_choice == CUSTOM_MODEL_OPTION:
+                provider.prop(self, "custom_model")
+            provider.prop(self, "reasoning_effort")
         provider.prop(self, "request_timeout")
         provider.prop(self, "max_output_tokens")
 
         key_column = layout.column(align=True)
         key_column.label(text="API Key", icon="KEYINGSET")
         source = api_key_source(self)
-        key_column.label(text=f"Source: {source}")
+        key_column.label(text=f"{provider_api_key_name(self.provider_choice)} source: {source}")
         session_row = key_column.row(align=True)
         session_row.enabled = source not in {"Environment", "Local .env"}
         session_row.prop(self, "session_api_key", text="Session Key")
@@ -175,6 +222,10 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         safety.label(text="Scene validation: Required")
         safety.label(text="Arbitrary Python: Disabled")
 
+    @property
+    def nvidia_model_choice_is_custom(self) -> bool:
+        return self.nvidia_model_choice == CUSTOM_MODEL_OPTION
+
 
 def get_preferences(context: Any) -> AIASSISTANT_AP_preferences | None:
     addon = context.preferences.addons.get(ADDON_ID)
@@ -184,20 +235,44 @@ def get_preferences(context: Any) -> AIASSISTANT_AP_preferences | None:
 
 
 def resolve_api_key(context: Any) -> str:
-    environment_key = resolve_environment_value("OPENAI_API_KEY")
+    preferences = get_preferences(context)
+    provider_choice = resolve_provider_choice(preferences)
+    environment_key = resolve_environment_value(provider_api_key_name(provider_choice))
     if environment_key:
         return environment_key
 
-    preferences = get_preferences(context)
     if preferences is None:
         return ""
     return preferences.session_api_key.strip()
 
 
+def resolve_provider_choice(
+    preferences: AIASSISTANT_AP_preferences | None,
+) -> str:
+    if preferences is None:
+        return PROVIDER_OPENAI
+    return preferences.provider_choice
+
+
+def resolve_provider_label(preferences: AIASSISTANT_AP_preferences | None) -> str:
+    return provider_label(resolve_provider_choice(preferences))
+
+
 def resolve_selected_model(preferences: AIASSISTANT_AP_preferences | None) -> str:
     if preferences is None:
         return DEFAULT_MODEL
+    if preferences.provider_choice == PROVIDER_NVIDIA:
+        return resolve_nvidia_model_name(
+            preferences.nvidia_model_choice,
+            preferences.custom_nvidia_model,
+        )
     return resolve_model_name(preferences.model_choice, preferences.custom_model)
+
+
+def resolve_nvidia_base_url(preferences: AIASSISTANT_AP_preferences | None) -> str:
+    if preferences is None:
+        return NVIDIA_DEFAULT_BASE_URL
+    return preferences.nvidia_base_url.strip() or NVIDIA_DEFAULT_BASE_URL
 
 
 def resolve_operation_limits(
@@ -213,7 +288,8 @@ def resolve_operation_limits(
 
 
 def api_key_source(preferences: AIASSISTANT_AP_preferences | None) -> str:
-    source = environment_value_source("OPENAI_API_KEY")
+    provider_choice = resolve_provider_choice(preferences)
+    source = environment_value_source(provider_api_key_name(provider_choice))
     if source != "Missing":
         return source
     if preferences is not None and preferences.session_api_key.strip():

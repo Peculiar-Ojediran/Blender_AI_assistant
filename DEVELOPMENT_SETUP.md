@@ -30,17 +30,24 @@ a provider SDK should be added later only if it provides a clear benefit.
 The adapter boundary, retries, failures, cost controls, and token reporting are documented in
 `PROVIDER_INTEGRATION.md`.
 
-## OpenAI Configuration
+## Provider Configuration
 
-OpenAI is the initial provider. The extension uses the Responses API with `gpt-5-nano` and low
+OpenAI remains the default provider. The extension uses the Responses API with `gpt-5-nano` and low
 reasoning effort by default during development. Blender exposes GPT-5 Nano, GPT-5.4 Nano, GPT-5.4
-Mini, GPT-5.5, and a validated custom-model field in both the Assistant panel and preferences. Plans
-are constrained through Structured Outputs and validated locally.
+Mini, GPT-5.5, and a validated custom-model field in both the Assistant panel and preferences.
 
-API-key resolution uses this priority:
+NVIDIA NIM is available as a selectable provider. It uses the OpenAI-compatible chat-completions
+endpoint at `https://integrate.api.nvidia.com/v1` by default and sends the controlled-operation JSON
+Schema through NVIDIA guided JSON. Blender exposes GPT-OSS 20B, Llama 3.3 70B Instruct, Nemotron 3
+Ultra 550B, and a validated custom NIM model field. The NVIDIA base URL is configurable for hosted
+or compatible NIM endpoints.
 
-1. The operating-system `OPENAI_API_KEY` environment variable.
-2. `OPENAI_API_KEY` in the project-root `.env` file for local source development.
+Plans from every provider are validated locally before approval or execution.
+
+API-key resolution uses this priority for the selected provider:
+
+1. The operating-system `OPENAI_API_KEY` or `NVIDIA_API_KEY` environment variable.
+2. The matching key in the project-root `.env` file for local source development.
 3. Blender's masked, session-only key field.
 
 The project-root `.env` file is already created and ignored by Git. Add the key after the equals
@@ -48,6 +55,7 @@ sign without committing or sharing the file:
 
 ```dotenv
 OPENAI_API_KEY=your-api-key-here
+NVIDIA_API_KEY=your-nvidia-key-here
 ```
 
 An `.env` file is plaintext and may be synchronized by OneDrive. The operating-system environment
@@ -135,21 +143,22 @@ operating-system environment.
 
 ## Verified Setup
 
-Verified on June 22, 2026:
+Verified on June 25, 2026:
 
 - `pip check`: no broken requirements.
-- `pytest`: 102 configuration, dependency, provider, planning-pipeline, async-runtime, coordinator,
+- `pytest`: 135 configuration, dependency, provider, planning-pipeline, async-runtime, coordinator,
   execution-result, operation-contract, safety-policy, scene-context, and workflow-state tests
   passed; 10 billable live OpenAI tests skipped by default.
 - `ruff check .`: passed.
-- `mypy extension tests`: passed, including Blender API stub resolution.
+- `mypy extension tests`: passed across 61 source files, including Blender API stub resolution.
 - Blender 5.1 background dependency, scope filtering, stale-target identity/fingerprint,
   scene-context, mocked background planning, immutable plan preview, UI operator guards, timer
   recovery, registration, and state tests: passed.
 - Blender safety checks for direct high-risk execution bypass, retained approval state, authoritative
   risk, and visible changed-data details: passed.
-- OpenAI token-usage parsing, malformed-usage fallback, bounded `Retry-After`, timeout/TLS/connection
-  classification, repair-call aggregation, and Blender usage-state propagation: passed.
+- OpenAI and NVIDIA provider parsing, schema enforcement, malformed-usage fallback, bounded
+  `Retry-After`, timeout/TLS/connection classification, repair-call aggregation, and Blender
+  usage-state propagation: passed.
 - Blender 5.1 controlled execution tests for all ten operations, every primitive and light variant,
   result references, deterministic naming, copy-on-write materials, deletion child preservation,
   complete preflight, stale rejection, and rollback: passed.
@@ -165,6 +174,6 @@ Verified on June 22, 2026:
 - Extension source and built archive validation: passed.
 - Extension archive build: passed.
 - Bundled-wheel references, archive secret/bytecode exclusions, and independent release-content
-  verification: passed; resulting archive size was 539,666 bytes.
+  verification: passed; resulting archive size was 556,429 bytes.
 - macOS, Linux, other Blender versions, and interactive foreground Undo remain explicit test-matrix
   gaps documented in `TEST_MATRIX.md`.

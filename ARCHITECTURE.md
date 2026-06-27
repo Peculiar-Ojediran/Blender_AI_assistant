@@ -5,7 +5,7 @@
 1. `ui` receives a natural-language request.
 2. `workflow` starts a planning job and manages state transitions.
 3. `context` reads Blender data on the main thread, filters private data, and applies a context budget.
-4. `providers` sends the request and strict operation schema to OpenAI.
+4. `providers` sends the request and strict operation schema to the selected provider.
 5. `operations` validates the returned plan structurally and against the current scene.
 6. `ui` presents the validated plan for approval, rejection, or rephrasing.
 7. `safety` recomputes local authorization and recovery requirements from the retained plan.
@@ -18,12 +18,14 @@ No provider response may bypass local validation, approval policy, or the main-t
 
 ### `extension/providers`
 
-Owns provider-neutral request/response types and OpenAI Responses API communication. It must not import Blender or mutate scenes.
-The OpenAI adapter requires a completed structured response, caps output tokens, retries only
-explicit transient HTTP responses within a fixed retry budget, and retains provider request IDs for
-diagnostics. Provider-neutral token usage includes input, cached-input, output, reasoning-output, and
-total counts. User requests and serialized scene values are treated as untrusted prompt data. The
-full adapter contract is documented in `PROVIDER_INTEGRATION.md`.
+Owns provider-neutral request/response types plus OpenAI and NVIDIA NIM communication. It must not
+import Blender or mutate scenes. The OpenAI adapter uses Responses structured output. The NVIDIA
+adapter uses OpenAI-compatible chat completions with NVIDIA guided JSON. Both cap output tokens,
+retry only explicit transient HTTP responses within a fixed retry budget, and retain provider
+request IDs for diagnostics. Provider-neutral token usage includes input, cached-input, output,
+reasoning-output, and total counts where available. User requests and serialized scene values are
+treated as untrusted prompt data. The full adapter contract is documented in
+`PROVIDER_INTEGRATION.md`.
 
 ### `extension/workflow`
 
@@ -94,7 +96,8 @@ Lower-level packages must not import `ui`. Providers must not import Blender-spe
 
 The Blender extension archive is self-contained. It bundles pinned pure-Python wheels for `requests`,
 `fastjsonschema`, and the HTTP dependency chain declared in `requirements-runtime.txt`. End users do
-not run `pip` inside Blender. The MVP calls OpenAI directly and does not require a local bridge.
+not run `pip` inside Blender. The MVP calls selected providers directly and does not require a local
+bridge.
 
 Development tests and `.blend` fixtures remain outside the archive. Blender's manifest validator and
 `tests/verify_release_package.py` independently check the release before an isolated-profile install.

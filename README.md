@@ -1,17 +1,19 @@
 # Blender AI Assistant
 
 Blender AI Assistant is a Blender 5.1 extension that sends a bounded scene snapshot and a natural-
-language request to OpenAI, receives a strict controlled-operation plan, validates it locally, shows
-it for approval, and applies only supported Blender operations.
+language request to a selected AI provider, receives a strict controlled-operation plan, validates it
+locally, shows it for approval, and applies only supported Blender operations.
 
 ## Current Release
 
 - Version: 0.1.4 MVP.
 - Verified platform: Windows x64.
 - Verified Blender version: 5.1.0.
-- Provider: OpenAI Responses API.
+- Providers: OpenAI Responses API and NVIDIA NIM chat completions.
 - Default development model: `gpt-5-nano` with low reasoning effort.
-- Models: GPT-5 Nano, GPT-5.4 Nano, GPT-5.4 Mini, GPT-5.5, or a custom model name.
+- OpenAI models: GPT-5 Nano, GPT-5.4 Nano, GPT-5.4 Mini, GPT-5.5, or a custom model name.
+- NVIDIA models: GPT-OSS 20B, Llama 3.3 70B Instruct, Nemotron 3 Ultra 550B, or a custom NIM model
+  name.
 - Configurable plan limits: operations, targets per operation, and duplicate outputs.
 - Local release package after building: `dist/blender_ai_assistant-0.1.4.zip`.
 

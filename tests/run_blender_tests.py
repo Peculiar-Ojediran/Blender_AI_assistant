@@ -34,11 +34,19 @@ from extension.operations.targets import (  # noqa: E402
     resolve_snapshot_targets,
 )
 from extension.providers.base import PlanRequest, PlanResponse, TokenUsage  # noqa: E402
+from extension.providers.nvidia import (  # noqa: E402
+    DEFAULT_NVIDIA_MODEL,
+    NVIDIA_MODEL_OPTIONS,
+)
 from extension.providers.openai import (  # noqa: E402
     CUSTOM_MODEL_OPTION,
     DEFAULT_TIMEOUT_SECONDS,
     OPENAI_MODEL_OPTIONS,
     OpenAIAPIError,
+)
+from extension.providers.registry import (  # noqa: E402
+    PROVIDER_ITEMS,
+    PROVIDER_OPENAI,
 )
 from extension.ui import planning as planning_module  # noqa: E402
 from extension.ui.operators import (  # noqa: E402
@@ -273,12 +281,25 @@ extension.register()
 assert hasattr(bpy.types.WindowManager, "blender_ai_state")
 assert hasattr(bpy.types, "AIASSISTANT_PT_assistant")
 assert hasattr(bpy.types, "BLENDER_AI_OT_plan_changes")
+provider_property: Any = AIASSISTANT_AP_preferences.bl_rna.properties["provider_choice"]
+provider_identifiers = {item.identifier for item in provider_property.enum_items}
+assert provider_identifiers == {identifier for identifier, _label, _description in PROVIDER_ITEMS}
+assert provider_property.default == PROVIDER_OPENAI
 model_property: Any = AIASSISTANT_AP_preferences.bl_rna.properties["model_choice"]
 model_identifiers = {item.identifier for item in model_property.enum_items}
 assert model_identifiers == {
     *(identifier for identifier, _label, _description in OPENAI_MODEL_OPTIONS),
     CUSTOM_MODEL_OPTION,
 }
+nvidia_model_property: Any = AIASSISTANT_AP_preferences.bl_rna.properties[
+    "nvidia_model_choice"
+]
+nvidia_model_identifiers = {item.identifier for item in nvidia_model_property.enum_items}
+assert nvidia_model_identifiers == {
+    *(identifier for identifier, _label, _description in NVIDIA_MODEL_OPTIONS),
+    CUSTOM_MODEL_OPTION,
+}
+assert nvidia_model_property.default == DEFAULT_NVIDIA_MODEL
 for property_name, expected_default, expected_maximum in (
     (
         "max_plan_operations",

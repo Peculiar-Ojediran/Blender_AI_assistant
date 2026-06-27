@@ -6,12 +6,13 @@ from typing import Any, Literal
 from bpy.types import Panel
 
 from ..providers.openai import CUSTOM_MODEL_OPTION
+from ..providers.registry import PROVIDER_NVIDIA
 from ..workflow.state import BUSY_STATUSES, PROMPT_EDITABLE_STATUSES, WorkflowStatus
 from .preferences import get_preferences, resolve_api_key
 from .properties import AIASSISTANT_PG_State
 
 STATUS_PRESENTATION: dict[WorkflowStatus, tuple[Any, str]] = {
-    WorkflowStatus.CONFIGURATION_REQUIRED: ("ERROR", "OpenAI setup required"),
+    WorkflowStatus.CONFIGURATION_REQUIRED: ("ERROR", "Provider setup required"),
     WorkflowStatus.IDLE: ("CHECKMARK", "Ready"),
     WorkflowStatus.COLLECTING_CONTEXT: ("TIME", "Reading scene"),
     WorkflowStatus.PLANNING: ("TIME", "Planning changes"),
@@ -107,9 +108,19 @@ class AIASSISTANT_PT_Assistant(AIASSISTANT_PT_Base):
         if preferences is not None:
             model_column = layout.column(align=True)
             model_column.enabled = status not in BUSY_STATUSES and not state.has_plan
-            model_column.prop(preferences, "model_choice", text="Model")
-            if preferences.model_choice == CUSTOM_MODEL_OPTION:
-                model_column.prop(preferences, "custom_model", text="Custom Model")
+            model_column.prop(preferences, "provider_choice", text="Provider")
+            if preferences.provider_choice == PROVIDER_NVIDIA:
+                model_column.prop(preferences, "nvidia_model_choice", text="Model")
+                if preferences.nvidia_model_choice == CUSTOM_MODEL_OPTION:
+                    model_column.prop(
+                        preferences,
+                        "custom_nvidia_model",
+                        text="Custom Model",
+                    )
+            else:
+                model_column.prop(preferences, "model_choice", text="Model")
+                if preferences.model_choice == CUSTOM_MODEL_OPTION:
+                    model_column.prop(preferences, "custom_model", text="Custom Model")
         prompt_column = layout.column(align=True)
         prompt_column.enabled = status in PROMPT_EDITABLE_STATUSES and not state.has_plan
         prompt_column.prop(state, "draft_prompt", text="")

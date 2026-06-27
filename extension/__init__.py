@@ -4,7 +4,7 @@ bl_info = {
     "version": (0, 1, 4),
     "blender": (5, 1, 0),
     "location": "3D View > Sidebar",
-    "description": "Plan controlled Blender changes with OpenAI",
+    "description": "Plan controlled Blender changes with selectable AI providers",
     "category": "3D View",
 }
 

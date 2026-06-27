@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "blender_ai_assistant"
 version = "0.1.4"
 name = "Blender AI Assistant"
-tagline = "Plan controlled Blender changes with OpenAI"
+tagline = "Plan controlled Blender changes with AI providers"
 maintainer = "Blender AI Assistant Contributors"
 type = "add-on"
 
@@ -20,7 +20,7 @@ wheels = [
 ]
 
 [permissions]
-network = "Connect to OpenAI when the user submits a request"
+network = "Connect to the selected AI provider when planning a request"
 
 [build]
 paths_exclude_pattern = [

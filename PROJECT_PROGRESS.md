@@ -579,3 +579,59 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 122 pytest tests with 10 live OpenAI tests skipped, Ruff, Mypy, Blender integration,
   controlled execution, sample scene checks, manifest/archive validation, package verification,
   isolated archive install, and installed extension integration checks.
+
+## 2026-06-25 13:30:14 -04:00
+
+### NVIDIA Provider Added
+
+- Added a selectable NVIDIA NIM provider alongside OpenAI.
+- Implemented direct HTTPS chat-completions support through `requests` using the hosted
+  `https://integrate.api.nvidia.com/v1` base URL by default, `NVIDIA_API_KEY` resolution, guided JSON
+  schema constraints, bounded retries, timeout handling, request-ID retention, and local plan
+  validation.
+- Added Blender UI preferences and sidebar controls for provider selection, NVIDIA model selection,
+  custom NVIDIA model names, and configurable NVIDIA base URL.
+- Updated setup, provider integration, privacy, architecture, troubleshooting, and test-matrix
+  documentation for the two-provider workflow.
+- Verified the full non-live release gate: 134 pytest tests passed with 10 live OpenAI tests skipped,
+  Ruff, Mypy across 61 source files, Blender integration, controlled execution, sample scenes, source
+  and archive manifest validation, package verification, isolated archive install, and installed
+  extension integration checks.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 555,519-byte package.
+
+## 2026-06-25 13:42:44 -04:00
+
+### NVIDIA Live Smoke Test Passed
+
+- Confirmed no OpenAI live test process was running after the interrupted OpenAI matrix command.
+- Ran a NVIDIA-only live smoke request using `NVIDIA_API_KEY` and the NVIDIA-hosted
+  `openai/gpt-oss-20b` model.
+- The initial NVIDIA response proved the key and endpoint worked but showed schema-following drift,
+  so the NVIDIA provider prompt now includes a plain field-name reminder in addition to guided JSON.
+- Verified a valid NVIDIA plan for creating one cube: status `ready`, one `CREATE_PRIMITIVE`
+  operation, low risk, 10.47 seconds, 621 input tokens, 322 output tokens, and 943 total tokens.
+- Set `openai/gpt-oss-20b` as the default NVIDIA model because it is the first live-verified NVIDIA
+  model for this extension.
+- Reran the full non-live release gate after the NVIDIA prompt/default update: 134 pytest tests
+  passed with 10 live OpenAI tests skipped, Ruff, Mypy, Blender integration, controlled execution,
+  sample scenes, manifest/archive validation, package verification, isolated archive install, and
+  installed extension checks all passed.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 555,861-byte package.
+
+## 2026-06-25 13:59:52 -04:00
+
+### NVIDIA Local-Validation Recovery Added
+
+- Added a one-shot NVIDIA schema repair path for parseable provider answers that fail the exact
+  controlled-operation JSON contract.
+- The repair request includes the original prompt, scene context, invalid answer, validation error,
+  and the same guided JSON schema; the repaired answer must still pass local validation or the
+  request fails closed.
+- Added mocked provider coverage for successful schema repair and rejection after one failed repair.
+- Updated provider integration documentation to describe the extra NVIDIA repair call and token
+  aggregation behavior.
+- Verified the full non-live release gate: 135 pytest tests passed with 10 live OpenAI tests skipped,
+  Ruff, Mypy across 61 source files, Blender integration, controlled execution, sample scenes, source
+  and archive manifest validation, package verification, isolated archive install, and installed
+  extension integration checks.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 556,429-byte package.

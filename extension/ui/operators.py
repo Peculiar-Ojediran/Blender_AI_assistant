@@ -41,7 +41,10 @@ from .planning import (
 from .preferences import (
     get_preferences,
     resolve_api_key,
+    resolve_nvidia_base_url,
     resolve_operation_limits,
+    resolve_provider_choice,
+    resolve_provider_label,
     resolve_selected_model,
 )
 from .properties import (
@@ -124,6 +127,7 @@ def _start_planning(
         clear_provider_usage(state)
     snapshot, _ = _collect_context(context, state)
     preferences = get_preferences(context)
+    provider_choice = resolve_provider_choice(preferences)
     model = resolve_selected_model(preferences)
     reasoning_effort = (
         preferences.reasoning_effort
@@ -141,7 +145,9 @@ def _start_planning(
         prompt=prompt,
         snapshot=snapshot,
         api_key=resolve_api_key(context),
+        provider_choice=provider_choice,
         model=model,
+        nvidia_base_url=resolve_nvidia_base_url(preferences),
         reasoning_effort=reasoning_effort,
         timeout_seconds=timeout,
         max_output_tokens=max_output_tokens,
@@ -216,7 +222,7 @@ class AIASSISTANT_OT_open_preferences(Operator):
 class AIASSISTANT_OT_clear_session_key(Operator):
     bl_idname = "blender_ai.clear_session_key"
     bl_label = "Clear Session Key"
-    bl_description = "Clear the non-persistent OpenAI session key"
+    bl_description = "Clear the non-persistent provider session key"
 
     def execute(self, context: Any) -> OperatorResult:
         preferences = get_preferences(context)
@@ -278,9 +284,13 @@ class AIASSISTANT_OT_plan_changes(Operator):
             return {"CANCELLED"}
 
         if not resolve_api_key(context):
+            provider_name = resolve_provider_label(get_preferences(context))
             state.workflow_status = WorkflowStatus.CONFIGURATION_REQUIRED.value
-            state.status_message = "OpenAI setup required"
-            self.report({"WARNING"}, "Configure an OpenAI API key before planning changes.")
+            state.status_message = f"{provider_name} setup required"
+            self.report(
+                {"WARNING"},
+                f"Configure a {provider_name} API key before planning changes.",
+            )
             return {"CANCELLED"}
 
         state.workflow_status = WorkflowStatus.COLLECTING_CONTEXT.value
@@ -315,9 +325,13 @@ class AIASSISTANT_OT_continue_planning(Operator):
             self.report({"WARNING"}, "Answer the clarification question before continuing.")
             return {"CANCELLED"}
         if not resolve_api_key(context):
+            provider_name = resolve_provider_label(get_preferences(context))
             state.workflow_status = WorkflowStatus.CONFIGURATION_REQUIRED.value
-            state.status_message = "OpenAI setup required"
-            self.report({"WARNING"}, "Configure an OpenAI API key before continuing.")
+            state.status_message = f"{provider_name} setup required"
+            self.report(
+                {"WARNING"},
+                f"Configure a {provider_name} API key before continuing.",
+            )
             return {"CANCELLED"}
 
         pending_result = pending_planning_result()

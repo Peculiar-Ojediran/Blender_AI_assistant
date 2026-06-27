@@ -6,27 +6,29 @@ Confirm that the selected file is the unextracted `blender_ai_assistant-0.1.4.zi
 5.1.x. Older Blender versions are rejected by the manifest. If Blender reports invalid metadata,
 download or rebuild the archive rather than editing its contents.
 
-## OpenAI Setup Required
+## Provider Setup Required
 
-The extension could not resolve an API key. Set `OPENAI_API_KEY` in the operating-system environment
-and restart Blender, or enter a key in the masked session field under the extension preferences. A
-project `.env` is only intended for running this source checkout.
+The extension could not resolve an API key for the selected provider. Set `OPENAI_API_KEY` or
+`NVIDIA_API_KEY` in the operating-system environment and restart Blender, or enter a key in the
+masked session field under the extension preferences. A project `.env` is only intended for running
+this source checkout.
 
 ## Authentication Error
 
-Check that the key is an OpenAI API key, has not been revoked, and belongs to an account or project
-with API access. ChatGPT subscriptions and API billing are separate. Replace exposed keys immediately.
+Check that the key belongs to the selected provider, has not been revoked, and belongs to an account
+or project with API access. ChatGPT subscriptions and OpenAI API billing are separate. Replace
+exposed keys immediately.
 
 ## Selected Model Is Unavailable
 
-Choose GPT-5 Nano, which remains the verified default, or confirm that the API project can access the
-selected model. A Custom selection requires an exact non-empty Responses API model name. Model
-availability can differ by account, project, and processing region.
+Choose the default model for the selected provider, or confirm that the API project can access the
+selected model. A Custom selection requires an exact non-empty provider model name. Model
+availability can differ by account, project, endpoint, and processing region.
 
 ## Rate Limit or Server Error
 
 HTTP 429 and transient 5xx responses receive a bounded retry. If the final attempt fails, wait and
-retry manually. The UI can include an OpenAI request ID in technical details; retain that ID when
+retry manually. The UI can include a provider request ID in technical details; retain that ID when
 investigating provider issues, but never share the API key.
 
 ## Timeout or Network Error
@@ -34,10 +36,10 @@ investigating provider issues, but never share the API key.
 The UI now distinguishes request timeout, TLS, and connection failures. The default timeout is 180
 seconds because complex structured plans can take longer than 60 seconds, especially with GPT-5.5
 and high operation/output limits. If a request still times out, increase `Request Timeout` up to 600
-seconds or use a faster Nano model. For connection errors, verify internet access, proxy/firewall and
-DNS rules, Blender's network permission for the extension, and access to `api.openai.com`. Transport
-failures with no HTTP response are not retried automatically because the server may already have
-accepted a billable request.
+seconds or use a faster model. For connection errors, verify internet access, proxy/firewall and DNS
+rules, Blender's network permission for the extension, and access to the selected provider endpoint
+such as `api.openai.com` or `integrate.api.nvidia.com`. Transport failures with no HTTP response are
+not retried automatically because the server may already have accepted a billable request.
 
 ## Invalid or Incomplete Plan
 

@@ -1,6 +1,6 @@
 # Privacy
 
-## Data Sent to OpenAI
+## Data Sent to the Selected Provider
 
 When the user chooses `Plan Changes` or continues a clarification, the extension sends:
 
@@ -38,9 +38,10 @@ data deterministically and reports omissions. The output limit defaults to 4,096
 
 ## Provider Handling
 
-OpenAI requests set `store` to false. Provider-side processing, abuse monitoring, account controls,
-and retention are governed by the provider's current terms and API data policies, not by this
-extension. Do not submit data that the applicable account or organization policy forbids.
+OpenAI requests set `store` to false. NVIDIA NIM requests use chat completions with a guided JSON
+schema. Provider-side processing, abuse monitoring, account controls, and retention are governed by
+the selected provider's current terms and API data policies, not by this extension. Do not submit
+data that the applicable account or organization policy forbids.
 
 ## Local Storage
 

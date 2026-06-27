@@ -20,14 +20,15 @@ version testing.
 | Surface | Coverage | Command |
 | --- | --- | --- |
 | Pure Python | Dynamic limit schemas, validation, risk, safety, context, async workflow, provider parsing | `python -m pytest` |
-| Invalid AI output | Missing fields, invalid JSON/schema, refusal, incomplete/missing status | `tests/test_openai_provider.py` |
-| Network behavior | Authentication, 429, 5xx exhaustion, Retry-After cap, timeout without ambiguous retry | `tests/test_openai_provider.py` |
+| Invalid AI output | Missing fields, invalid JSON/schema, refusal, incomplete/missing status, truncated chat output | `tests/test_openai_provider.py`, `tests/test_nvidia_provider.py` |
+| Network behavior | Authentication, 429, 5xx exhaustion, Retry-After cap, timeout without ambiguous retry | `tests/test_openai_provider.py`, `tests/test_nvidia_provider.py` |
 | Blender integration | Registration, scene context, planning, approval, UI state, stale targets | `tests/run_blender_tests.py` |
 | Controlled operations | All ten operation types, variants, references, preflight, rollback | `tests/run_execution_tests.py` |
 | Sample scenes | Simple selection, messy scene privacy/budgets, 1,000-object performance | `tests/run_sample_scene_tests.py` |
 | Packaging | Manifest/source/archive validation and forbidden-file/wheel checks | `tests/verify_release_package.py` |
 | Installed artifact | Clean-profile install, packaged imports, UI registration | `tests/run_installed_extension_tests.py` |
-| Live provider | Ten schema-constrained scenarios with no automatic retries | 9 passed, 1 failed |
+| Live OpenAI provider | Ten schema-constrained scenarios with no automatic retries | 9 passed, 1 failed |
+| Live NVIDIA provider | Hosted NIM real-request matrix | Not yet added |
 
 ## Latest Live Matrix
 

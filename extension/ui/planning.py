@@ -16,6 +16,12 @@ from ..operations import (
 )
 from ..operations.targets import TargetResolutionError, resolve_plan_targets
 from ..providers.base import Provider
+from ..providers.nvidia import (
+    DEFAULT_NVIDIA_MODEL,
+    NVIDIA_DEFAULT_BASE_URL,
+    NvidiaAPIError,
+    NvidiaProvider,
+)
 from ..providers.openai import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
@@ -24,6 +30,7 @@ from ..providers.openai import (
     OpenAIAPIError,
     OpenAIProvider,
 )
+from ..providers.registry import PROVIDER_NVIDIA, PROVIDER_OPENAI, provider_label
 from ..workflow import (
     PlanningConversation,
     PlanningCoordinator,
@@ -68,7 +75,9 @@ def start_planning_job(
     prompt: str,
     snapshot: SceneContextSnapshot,
     api_key: str,
+    provider_choice: str = PROVIDER_OPENAI,
     model: str = DEFAULT_MODEL,
+    nvidia_base_url: str = NVIDIA_DEFAULT_BASE_URL,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
@@ -76,9 +85,11 @@ def start_planning_job(
     conversation: PlanningConversation | None = None,
     limits: OperationLimits = DEFAULT_OPERATION_LIMITS,
 ) -> int:
-    active_provider = provider or OpenAIProvider(
-        api_key,
+    active_provider = provider or _build_provider(
+        provider_choice=provider_choice,
+        api_key=api_key,
         model=model,
+        nvidia_base_url=nvidia_base_url,
         reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
         max_output_tokens=max_output_tokens,
@@ -102,6 +113,34 @@ def clear_planning_result() -> None:
 
 def pending_planning_result() -> PlanningResult | None:
     return _get_coordinator().pending_result
+
+
+def _build_provider(
+    *,
+    provider_choice: str,
+    api_key: str,
+    model: str,
+    nvidia_base_url: str,
+    reasoning_effort: str,
+    timeout_seconds: float,
+    max_output_tokens: int,
+) -> Provider:
+    if provider_choice == PROVIDER_NVIDIA:
+        resolved_model = model or DEFAULT_NVIDIA_MODEL
+        return NvidiaProvider(
+            api_key,
+            model=resolved_model,
+            base_url=nvidia_base_url,
+            timeout_seconds=timeout_seconds,
+            max_output_tokens=max_output_tokens,
+        )
+    return OpenAIProvider(
+        api_key,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        timeout_seconds=timeout_seconds,
+        max_output_tokens=max_output_tokens,
+    )
 
 
 def process_planning_events(context: Any) -> int:
@@ -224,17 +263,31 @@ def _show_failure(state: AIASSISTANT_PG_State, error: Exception) -> None:
     clear_plan(state)
     state.workflow_status = WorkflowStatus.ERROR.value
     state.status_message = "Planning failed"
-    if isinstance(error, OpenAIAPIError) and error.error_code == "request_timeout":
-        state.error_headline = "OpenAI request timed out"
-    elif isinstance(error, OpenAIAPIError) and error.error_code in {
+    error_code = _provider_error_code(error)
+    label = _provider_error_label(error)
+    if error_code == "request_timeout":
+        state.error_headline = f"{label} request timed out"
+    elif error_code in {
         "connection_error",
         "tls_error",
         "transport_error",
     }:
-        state.error_headline = "Could not connect to OpenAI"
+        state.error_headline = f"Could not connect to {label}"
     else:
         state.error_headline = "Could not prepare a valid plan"
     state.error_details = str(error) or type(error).__name__
+
+
+def _provider_error_code(error: Exception) -> str:
+    if isinstance(error, (OpenAIAPIError, NvidiaAPIError)):
+        return error.error_code
+    return ""
+
+
+def _provider_error_label(error: Exception) -> str:
+    if isinstance(error, NvidiaAPIError):
+        return provider_label(PROVIDER_NVIDIA)
+    return provider_label(PROVIDER_OPENAI)
 
 
 def _state(context: Any) -> AIASSISTANT_PG_State:
