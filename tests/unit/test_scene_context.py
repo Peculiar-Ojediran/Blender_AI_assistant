@@ -82,6 +82,7 @@ def test_serializer_excludes_internal_target_index() -> None:
     assert "target_index" not in decoded
     assert decoded["detailed_objects"][0]["id"] == "obj_0001"
     assert decoded["materials"][0]["id"] == "mat_0001"
+    assert decoded["materials"][0]["node_summary"] == {"node_count": 0}
     assert serialized.character_count == len(serialized.json_text)
     assert serialized.json_text == json.dumps(
         serialized.payload,
@@ -151,6 +152,7 @@ def _snapshot() -> SceneContextSnapshot:
                 (0.8, 0.8, 0.8, 1.0),
                 0.0,
                 0.5,
+                MappingProxyType({"node_count": 0}),
                 MappingProxyType({}),
             ),
         ),

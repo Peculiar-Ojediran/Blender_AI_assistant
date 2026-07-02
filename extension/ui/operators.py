@@ -24,6 +24,7 @@ from ..operations import (
 )
 from ..operations.undo import create_recovery_point, global_undo_enabled
 from ..providers.openai import DEFAULT_REASONING_EFFORT, DEFAULT_TIMEOUT_SECONDS
+from ..providers.registry import provider_label
 from ..safety import (
     SafetyConfirmationRequired,
     SafetyPolicyError,
@@ -44,7 +45,6 @@ from .preferences import (
     resolve_nvidia_base_url,
     resolve_operation_limits,
     resolve_provider_choice,
-    resolve_provider_label,
     resolve_selected_model,
 )
 from .properties import (
@@ -284,7 +284,7 @@ class AIASSISTANT_OT_plan_changes(Operator):
             return {"CANCELLED"}
 
         if not resolve_api_key(context):
-            provider_name = resolve_provider_label(get_preferences(context))
+            provider_name = provider_label(resolve_provider_choice(get_preferences(context)))
             state.workflow_status = WorkflowStatus.CONFIGURATION_REQUIRED.value
             state.status_message = f"{provider_name} setup required"
             self.report(
@@ -325,7 +325,7 @@ class AIASSISTANT_OT_continue_planning(Operator):
             self.report({"WARNING"}, "Answer the clarification question before continuing.")
             return {"CANCELLED"}
         if not resolve_api_key(context):
-            provider_name = resolve_provider_label(get_preferences(context))
+            provider_name = provider_label(resolve_provider_choice(get_preferences(context)))
             state.workflow_status = WorkflowStatus.CONFIGURATION_REQUIRED.value
             state.status_message = f"{provider_name} setup required"
             self.report(

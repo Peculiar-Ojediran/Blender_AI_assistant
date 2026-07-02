@@ -543,6 +543,133 @@ Add these only after the MVP is reliable:
 - Per-project memory.
 - Voice input.
 
+### Phase 11A: Texture, Shading, and Sculpting Expansion
+
+Texture, shading, and sculpting use the same approval-first controlled-operation model as the rest
+of the extension. The provider still cannot generate arbitrary Blender Python, freely enter edit
+mode, browse files, or mutate mesh data outside validated operations.
+
+Implemented texture and shading operations:
+
+| Operation | Purpose | Risk |
+| --- | --- | --- |
+| `CREATE_MATERIAL_PRESET` | Create a bounded material preset from an approved material family | Low |
+| `CREATE_PROCEDURAL_MATERIAL` | Create a bounded procedural material template | Low |
+| `CREATE_SHADER_NODE` | Add one approved shader node to a referenced material | Low |
+| `SET_SHADER_NODE_VALUE` | Set a bounded value on an approved shader node socket | Low |
+| `CONNECT_SHADER_NODES` | Connect approved shader sockets inside one material | Low |
+| `LOAD_IMAGE_TEXTURE` | Load a local or HTTPS image texture with extension and size limits | High |
+| `CREATE_IMAGE_TEXTURE_NODE` | Attach an approved image texture to a material | Medium |
+| `SET_TEXTURE_MAPPING` | Set mapping values on a controlled image texture node | Medium |
+| `ASSIGN_UV_MAP` | Bind an existing UV map to a controlled texture node | Medium |
+| `CREATE_UV_MAP` | Create a UV map on explicit mesh targets | Medium |
+| `UNWRAP_UV_MAP` | Write bounded generated UV coordinates to explicit mesh targets | High |
+| `PACK_UV_ISLANDS` | Normalize explicit UV maps with bounded margin settings | High |
+| `IMPORT_PBR_TEXTURE_SET` | Import explicitly listed PBR texture files by role | High |
+| `CREATE_PBR_MATERIAL` | Build a Principled BSDF material from approved PBR image inputs | High |
+| `SET_PBR_TEXTURE_ROLE` | Correct an imported PBR texture role and color space | Medium |
+| `GENERATE_TEXTURE_IMAGE` | Create a generated texture image with optional OpenAI image generation and deterministic local fallback | High |
+| `SAVE_GENERATED_TEXTURE` | Save a generated image to an explicit local output path | High |
+| `ATTACH_GENERATED_TEXTURE` | Attach a generated image to a material texture node | Medium |
+| `CREATE_PAINT_IMAGE` | Create a bounded image datablock for painting | High |
+| `ASSIGN_PAINT_SLOT` | Attach a paint image to a material and UV target | Medium |
+| `APPLY_TEXTURE_PAINT_STROKES` | Apply bounded UV-space paint strokes to an image | High |
+| `FILL_TEXTURE_REGION` | Fill a full image or explicit UV rectangle | Medium |
+| `CREATE_BAKE_TARGET_IMAGE` | Create a bounded image datablock for bake output | High |
+| `BAKE_TEXTURE_PASS` | Write a deterministic bounded bake pass to an image | High |
+| `ASSIGN_BAKED_TEXTURE` | Attach a baked image to a material texture node | Medium |
+
+Implemented sculpt-like and mesh-detail operations:
+
+| Operation | Purpose | Risk |
+| --- | --- | --- |
+| `ADD_DISPLACE_MODIFIER` | Add a non-applied procedural displacement modifier | Medium |
+| `ADD_SMOOTH_MODIFIER` | Add a non-applied smooth modifier | Medium |
+| `ADD_REMESH_MODIFIER` | Add a non-applied remesh modifier | High |
+| `SCULPT_SMOOTH_REGION` | Smooth a bounded mesh region with vertex-position rollback | High |
+| `APPLY_SCULPT_BRUSH_STROKES` | Apply bounded sculpt-like brush strokes with vertex-position rollback | High |
+
+Near-term supported prompts include:
+
+- "Make the selected object look like rough black plastic."
+- "Give the table a procedural wood material."
+- "Add a noise bump texture to the rock."
+- "Make the selected metal more scratched and less reflective."
+- "Add subtle organic bumps without applying destructive changes."
+- "Smooth this object slightly."
+
+Texture and shader validation rules:
+
+- Material families, procedural patterns, shader node types, and socket names are allowlisted.
+- Shader result references must point backward to a compatible `CREATE_SHADER_NODE`.
+- Image texture sources must be local files or direct HTTPS image URLs.
+- Image loading remains high risk because it can access external or local files.
+- PBR texture roles are explicit and unique. Roughness, metallic, normal, ambient occlusion,
+  displacement, and alpha maps use non-color data.
+- UV operations require explicit UV map names and reject missing or unintended overwrite targets.
+- Generated textures are bounded local image datablocks. They use deterministic local pattern
+  generation by default and can call OpenAI image generation only when explicitly enabled.
+- Paint and bake operations mutate explicit image datablocks and store previous pixels for rollback.
+- The material output and node tree are edited through Blender data APIs with rollback actions.
+
+Sculpting validation rules:
+
+- Sculpt-like modifier operations remain non-applied by contract.
+- Remesh and direct mesh edits are high risk.
+- Direct mesh edits require explicit mesh targets and bounded strength, radius, iterations, and
+  stroke counts.
+- Region smoothing can target all vertices, a material region, or a vertex group.
+- Region payloads always include `kind`, `material_id`, and `vertex_group`; unused fields are null
+  so the schema remains compatible with strict structured-output providers.
+- Brush strokes are capped and replayed from structured stroke data, not arbitrary freehand code.
+- Brush strokes that miss all vertices inside their radius snap to the nearest vertex neighborhood
+  so minor coordinate/radius mistakes do not roll back the whole approved plan.
+- Original vertex positions are stored before mutation so transaction rollback can restore them.
+
+Scene context additions added for richer planning:
+
+- Material node summaries: `use_nodes`, Principled BSDF presence, Material Output presence, node
+  counts, known node types, image/procedural texture counts, bump/normal path presence, and
+  assistant-created node labels.
+- Mesh summaries: vertex/edge/polygon counts, UV map names, active/render UV map names, material
+  slot count, modifier stack, shape key count/names, vertex group count/names, and linked/library
+  state.
+- Privacy controls for texture filenames and file paths. File paths should stay hidden unless the
+  existing file-path preference is enabled or the user explicitly provides a path/URL.
+
+Deferred future implementation backlog:
+
+- Arbitrary shader graph generation, pending a full node/socket compatibility registry. The supported
+  contract now covers assistant-owned node removal, explicit link disconnects, bounded color ramps,
+  safe mix-chain templates, controlled shader graph templates, and material output validation/repair.
+- Arbitrary Geometry Nodes graph generation. The supported contract now covers only template-driven
+  Geometry Nodes preset/group-template modifiers and bounded exposed-input metadata.
+- External image-generation provider integration now exists through the optional OpenAI image
+  provider. Cost, provenance, and licensing should still be surfaced clearly before public release.
+- Full Blender render-engine texture baking with progress, cancellation, and partial-output recovery.
+  Current bake passes are deterministic bounded image writes.
+- Interactive Texture Paint mode replay and asset-browser UX for paint output. Current painting is
+  bounded UV-space pixel editing.
+- Advanced UV editing beyond deterministic projected unwrap and normalized packing.
+- Blender-native sculpt-mode face sets. The supported contract now covers material/vertex-group
+  sculpt regions, mesh face-set attributes, vertex-group masks, and bounded region operations.
+- Full sculpt-mode dynamic topology and provider-authored destructive voxel remeshing. The supported
+  contract now covers generated dynamic-topology-style copies and explicit generated-mesh
+  application with rollback.
+- Advanced rig/animation-aware blendshape workflows. The supported contract now covers bounded shape
+  key creation, rig-safe shape key creation, shape key value updates, and non-applied Multires
+  modifiers.
+- Full interactive viewport previews. The supported contract now covers bounded local preview image
+  datablocks and bounded low-resolution render-preview images.
+
+The staged roadmap for these deferred features has been merged back into this main plan now that
+the controlled implementations are complete. Future deferred work should be planned directly here
+or in a new focused plan only when a genuinely new feature family is being designed.
+
+The first milestone for this phase is complete when schema validation, local semantics, risk
+assessment, provider instructions, execution, rollback, Python contract tests, and Blender execution
+tests cover the implemented operations.
+
 ## Testing Strategy After Code Changes
 
 Testing should happen in layers, starting with fast checks that do not require Blender and ending with manual/live Blender testing only when needed.

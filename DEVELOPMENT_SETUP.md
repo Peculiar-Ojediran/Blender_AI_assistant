@@ -56,6 +56,10 @@ sign without committing or sharing the file:
 ```dotenv
 OPENAI_API_KEY=your-api-key-here
 NVIDIA_API_KEY=your-nvidia-key-here
+# Optional, billable texture generation through OpenAI Images:
+OPENAI_IMAGE_GENERATION_ENABLED=false
+OPENAI_IMAGE_MODEL=gpt-image-2
+OPENAI_IMAGE_QUALITY=low
 ```
 
 An `.env` file is plaintext and may be synchronized by OneDrive. The operating-system environment
@@ -63,8 +67,9 @@ or a dedicated secret manager is safer for long-lived credentials. Never add API
 files, Blender files, tests, logs, or project documentation. Installed ZIP users should use the
 operating-system environment or session-only Blender field; the project `.env` is not packaged.
 
-The provider is tested with mocked HTTP responses by default. A live API request is never included
-in routine verification because it is nondeterministic and billable.
+The provider and OpenAI image-generation paths are tested with mocked HTTP responses by default. A
+live API request is never included in routine verification because it is nondeterministic and
+billable.
 
 An explicit ten-scenario live matrix is available when provider or prompt behavior changes. It sends
 at most ten real requests with automatic HTTP retries disabled. The scenarios cover every controlled

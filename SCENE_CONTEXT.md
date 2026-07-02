@@ -27,9 +27,14 @@ The provider-safe payload contains:
 - Detailed object transforms, dimensions, collection/material references, modifiers, and compact
   type-specific data.
 - Mesh vertex, edge, and polygon counts.
+- Mesh UV map counts/names, active/render UV map names, material slot count, vertex group
+  counts/names, shape key counts/names, modifier stack summaries, and linked object/data flags.
 - Light type, energy, and color.
 - Camera focal length and sensor width.
-- Budgeted material and collection records.
+- Budgeted material records with compact node summaries, including known node types, node counts,
+  Principled BSDF presence, Material Output presence, image/procedural texture counts, bump/normal
+  path presence, and assistant-created node labels.
+- Budgeted collection records.
 - Omission counts, privacy flags, and collection warnings.
 
 The serializer produces deterministic compact JSON and reports its exact character count.
@@ -105,4 +110,6 @@ scene reader is loaded lazily only when a Blender context is collected.
 - Snapshot and live target validation run when planning results return. The executor repeats full
   live validation and complete-plan preflight immediately before mutation.
 - Constraints, geometry nodes, animation, rigging, and detailed node graphs are not serialized.
+- Material node summaries are intentionally compact; full arbitrary node graphs are still deferred
+  until a node/socket compatibility registry and graph-level validation are implemented.
 - Viewport screenshots and rendered previews are deferred.

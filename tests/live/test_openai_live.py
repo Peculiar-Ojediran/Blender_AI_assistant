@@ -242,6 +242,7 @@ def _snapshot() -> SceneContextSnapshot:
                 (0.8, 0.8, 0.8, 1.0),
                 0.0,
                 0.5,
+                MappingProxyType({"node_count": 0}),
                 MappingProxyType({}),
             ),
         ),

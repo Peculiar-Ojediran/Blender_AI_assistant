@@ -8,6 +8,12 @@ from typing import Any, cast
 
 import bpy
 
+from ..operations.registries import (
+    BUMP_OR_NORMAL_NODE_TYPES,
+    IMAGE_TEXTURE_NODE_TYPES,
+    PROCEDURAL_SHADER_NODE_TYPES,
+    SHADER_NODE_TYPES,
+)
 from .budget import apply_object_budget
 from .errors import ContextThreadError
 from .identity import target_state_fingerprint
@@ -28,7 +34,8 @@ from .models import (
 from .privacy import PrivacyStats, sanitize_custom_properties
 from .serializer import fit_scene_context_to_budget
 
-CONTEXT_SCHEMA_VERSION = 1
+CONTEXT_SCHEMA_VERSION = 2
+SUMMARY_NAME_LIMIT = 20
 
 
 def read_scene_context(context: Any, options: ContextOptions) -> SceneContextSnapshot:
@@ -124,6 +131,7 @@ def read_scene_context(context: Any, options: ContextOptions) -> SceneContextSna
                 diffuse_color=_float4(material.diffuse_color),
                 metallic=float(getattr(material, "metallic", 0.0)),
                 roughness=float(getattr(material, "roughness", 0.5)),
+                node_summary=MappingProxyType(_material_node_summary(material)),
                 custom_properties=MappingProxyType(custom_properties),
             )
         )
@@ -379,6 +387,26 @@ def _object_type_data(item: Any) -> dict[str, JsonValue]:
             "vertex_count": len(data.vertices),
             "edge_count": len(data.edges),
             "polygon_count": len(data.polygons),
+            "material_slot_count": len(item.material_slots),
+            "uv_map_count": len(data.uv_layers),
+            "uv_maps": _bounded_names(data.uv_layers),
+            "active_uv_map": _active_layer_name(data.uv_layers),
+            "render_uv_map": _render_uv_map_name(data),
+            "vertex_group_count": len(item.vertex_groups),
+            "vertex_groups": _bounded_names(item.vertex_groups),
+            "shape_key_count": _shape_key_count(data),
+            "shape_keys": _shape_key_names(data),
+            "modifier_stack": [
+                {
+                    "name": modifier.name,
+                    "type": modifier.type.lower(),
+                    "show_viewport": bool(modifier.show_viewport),
+                    "show_render": bool(modifier.show_render),
+                }
+                for modifier in item.modifiers
+            ],
+            "is_linked_object": getattr(item, "library", None) is not None,
+            "is_linked_data": getattr(data, "library", None) is not None,
         }
     if item.type == "LIGHT":
         return {
@@ -392,6 +420,88 @@ def _object_type_data(item: Any) -> dict[str, JsonValue]:
             "sensor_width": float(data.sensor_width),
         }
     return {}
+
+
+def _bounded_names(items: Any, limit: int = SUMMARY_NAME_LIMIT) -> list[JsonValue]:
+    return [str(item.name) for item in tuple(items)[:limit]]
+
+
+def _active_layer_name(layers: Any) -> str | None:
+    active = getattr(layers, "active", None)
+    return str(active.name) if active is not None else None
+
+
+def _render_uv_map_name(data: Any) -> str | None:
+    for layer in data.uv_layers:
+        if bool(getattr(layer, "active_render", False)):
+            return str(layer.name)
+    return None
+
+
+def _shape_key_count(data: Any) -> int:
+    key_blocks = getattr(getattr(data, "shape_keys", None), "key_blocks", None)
+    return len(key_blocks) if key_blocks is not None else 0
+
+
+def _shape_key_names(data: Any) -> list[JsonValue]:
+    key_blocks = getattr(getattr(data, "shape_keys", None), "key_blocks", None)
+    if key_blocks is None:
+        return []
+    return _bounded_names(key_blocks)
+
+
+def _material_node_summary(material: Any) -> dict[str, JsonValue]:
+    if not bool(material.use_nodes) or material.node_tree is None:
+        return {
+            "node_count": 0,
+            "known_node_types": [],
+            "has_principled_bsdf": False,
+            "has_material_output": False,
+            "image_texture_node_count": 0,
+            "procedural_texture_node_count": 0,
+            "has_bump_or_normal_path": False,
+            "assistant_node_labels": [],
+        }
+
+    nodes = tuple(material.node_tree.nodes)
+    node_types = tuple(str(node.bl_idname) for node in nodes)
+    known_node_types: list[JsonValue] = [
+        str(node_type)
+        for node_type in sorted(
+            {node_type for node_type in node_types if node_type in SHADER_NODE_TYPES}
+        )
+    ]
+    has_principled_bsdf = any(
+        node_type == "ShaderNodeBsdfPrincipled" for node_type in node_types
+    )
+    has_material_output = any(
+        node_type == "ShaderNodeOutputMaterial" for node_type in node_types
+    )
+    return {
+        "node_count": len(nodes),
+        "known_node_types": known_node_types,
+        "has_principled_bsdf": has_principled_bsdf,
+        "has_material_output": has_material_output,
+        "image_texture_node_count": sum(
+            node_type in IMAGE_TEXTURE_NODE_TYPES for node_type in node_types
+        ),
+        "procedural_texture_node_count": sum(
+            node_type in PROCEDURAL_SHADER_NODE_TYPES for node_type in node_types
+        ),
+        "has_bump_or_normal_path": any(
+            node_type in BUMP_OR_NORMAL_NODE_TYPES for node_type in node_types
+        ),
+        "assistant_node_labels": _assistant_node_labels(nodes),
+    }
+
+
+def _assistant_node_labels(nodes: tuple[Any, ...]) -> list[JsonValue]:
+    labels: list[JsonValue] = []
+    for node in nodes:
+        label = str(node.label or node.name)
+        if label.startswith(("AI ", "AI_", "Exec ", "Future ")):
+            labels.append(label)
+    return labels[:SUMMARY_NAME_LIMIT]
 
 
 def _collection_context(

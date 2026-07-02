@@ -635,3 +635,237 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   and archive manifest validation, package verification, isolated archive install, and installed
   extension integration checks.
 - Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 556,429-byte package.
+
+## 2026-06-29 02:12:10 -04:00
+
+### Texture And Sculpting Planning Started
+
+- Added `TEXTURE_AND_SCULPTING_PLAN.md` for the next major feature expansion.
+- Split the feature into a near-term texture/shader track and a staged sculpt-like workflow track.
+- Recommended material presets and procedural material templates before low-level shader node
+  editing.
+- Recommended non-destructive modifier-based sculpt-like operations before true sculpt mode or
+  destructive mesh editing.
+- Linked the new plan from `AI_BLENDER_EXTENSION_PLAN.md`.
+
+## 2026-06-29 02:16:45 -04:00
+
+### Deferred Texture And Sculpting Features Added
+
+- Added a future implementation backlog to `TEXTURE_AND_SCULPTING_PLAN.md`.
+- Captured intentionally deferred work for arbitrary shader graphs, Geometry Nodes, texture painting,
+  UV editing, PBR material packs, AI-generated textures, texture baking, direct sculpt brush strokes,
+  sculpt masks/face sets, dynamic topology, destructive voxel remeshing, shape keys, Multires, and
+  preview rendering.
+- Documented why each item is deferred and what prerequisites should exist before implementation.
+
+## 2026-06-29 02:21:11 -04:00
+
+### Future Texture And Sculpting Tests Added
+
+- Added opt-in future pytest coverage for planned texture and sculpting contract behavior.
+- Covered material presets, procedural materials, controlled shader nodes, HTTPS image textures,
+  sculpt-like modifiers, high-risk remesh/sculpt operations, and sculpt stroke bounds.
+- Added a future Blender background execution scaffold for material preset creation, shader node
+  value setting, material assignment, and non-applied displacement modifier behavior.
+- Updated `TEXTURE_AND_SCULPTING_PLAN.md` and `TEST_MATRIX.md` with the future test commands.
+- Verified the default suite with future tests skipped: 135 pytest tests passed, 19 skipped, Ruff
+  passed, Mypy passed across 63 source files, and the future Blender scaffold exits cleanly when its
+  opt-in flag is not set.
+
+## 2026-06-29 02:42:35 -04:00
+
+### Texture And Sculpting Operations Implemented
+
+- Added controlled-operation support for material presets, procedural materials, shader node
+  creation/value/linking, image texture loading, displace/smooth/remesh modifiers, bounded region
+  smoothing, and bounded sculpt-like brush strokes.
+- Added local schema, semantic validation, result-reference handling, target resolution, risk
+  scoring, provider instructions, preflight simulation, execution, rollback, and change reporting for
+  the new operation set.
+- Promoted texture/sculpting Python contract tests from opt-in future coverage to normal pytest
+  coverage.
+- Verified the updated codebase: 144 pytest tests passed with 10 live OpenAI tests skipped, Ruff
+  passed, Mypy passed across 63 source files, Blender texture/sculpting execution passed, Blender
+  controlled execution passed, Blender integration passed, and sample scene tests passed.
+- Merged the standalone texture/sculpting plan into Phase 11A of `AI_BLENDER_EXTENSION_PLAN.md` and
+  removed `TEXTURE_AND_SCULPTING_PLAN.md` to keep one source of truth.
+
+## 2026-06-29 02:53:18 -04:00
+
+### Texture And Sculpting Tests Added To General Execution Suite
+
+- Merged texture/sculpting Blender execution coverage into `tests/run_execution_tests.py`.
+- The general controlled-execution test now covers material presets, procedural materials, image
+  texture loading, shader node creation/value/linking, non-applied displace/smooth/remesh
+  modifiers, bounded region smoothing, and bounded sculpt-like brush strokes.
+- Removed the opt-in environment guard from the targeted texture/sculpting Blender scaffold.
+- Updated the test matrix and targeted test README to show that the general execution test is now
+  the primary Blender coverage path for texture/sculpting behavior.
+- Verified the integration: 144 pytest tests passed with 10 live OpenAI tests skipped, Ruff passed,
+  Mypy passed across 63 source files, the general Blender controlled-execution test passed, and the
+  targeted texture/sculpting Blender scaffold passed.
+
+
+
+## 2026-06-29 13:51:24 -04:00
+
+### Sculpt Region Schema Fixed For OpenAI
+
+- Fixed `SCULPT_SMOOTH_REGION.region` so strict structured-output providers receive every region
+  property as required, with unused `material_id` and `vertex_group` values set to null.
+- Updated provider instructions, controlled-operation documentation, and the project plan to explain
+  the explicit-null sculpt region payload shape.
+- Added unit regression coverage for the nested region schema shape and updated the general Blender
+  execution test fixture.
+- Verified the fix: 64 operation-contract tests passed, Blender controlled execution passed, 136
+  pytest tests passed with 10 live OpenAI tests skipped, Ruff passed, and Mypy passed across 61
+  source files.
+- Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 564,302 bytes.
+
+## 2026-06-29 17:06:12 -04:00
+
+### Sculpt Brush Miss Rollback Fixed
+
+- Fixed `APPLY_SCULPT_BRUSH_STROKES` so strokes that miss all vertices inside their radius snap to
+  the nearest vertex neighborhood instead of failing the operation and rolling back the entire plan.
+- The brush executor now accepts stroke locations either as object-local coordinates or scene-space
+  coordinates converted through the target object's world matrix.
+- Updated the general Blender controlled-execution test to intentionally use an out-of-radius brush
+  stroke and verify the plan still succeeds.
+- Updated provider instructions and planning/operation documentation for the safer brush behavior.
+- Verified the fix: Blender controlled execution passed, 136 pytest tests passed with 10 live OpenAI
+  tests skipped, Ruff passed, and Mypy passed across 61 source files.
+- Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 565,113 bytes.
+
+## 2026-06-29 18:09:55 -04:00
+
+### Deferred Future Implementation Planning Started
+
+- Added `FUTURE_IMPLEMENTATION_PLAN.md` as the staged roadmap for deferred feature work.
+- Split future work into context/registry foundations, advanced shader graph editing, UV/image
+  workflows, PBR import, AI texture generation, texture painting, texture baking, Geometry Nodes,
+  generated mesh variants, advanced sculpt regions, long-term topology workflows, and preview UX.
+- Defined operation candidates, risk levels, prerequisites, design rules, test gates, and do-not-build
+  criteria for each track.
+- Linked the new roadmap from `AI_BLENDER_EXTENSION_PLAN.md` so deferred features have one planning
+  entry point before they move into the controlled-operation contract.
+
+## 2026-06-29 20:02:14 -04:00
+
+### Deferred Future Foundation Implemented
+
+- Added shared operation registries for material families, procedural patterns, shader node types,
+  socket names, UV operation names, and future mesh-processing limits.
+- Updated the scene context system to schema version 2 with compact material node summaries and
+  richer mesh summaries for UV maps, vertex groups, shape keys, modifier stack state, material slots,
+  and linked data flags.
+- Updated serialization, unit tests, Blender context tests, scene-context documentation, and the
+  deferred implementation roadmap to cover the new foundation data.
+- Verified the implementation: 137 pytest tests passed with 10 live tests skipped, Ruff passed, Mypy
+  passed across 62 source files, Blender dependency/context smoke test passed, sample scene tests
+  passed, and Blender controlled execution tests passed.
+- Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 566,586 bytes.
+
+## 2026-06-30 01:18:39 -04:00
+
+### Deferred Future Tracks B-F Implemented
+
+- Implemented controlled UV and image texture operations: image texture node creation, texture
+  mapping, UV map assignment, UV map creation, deterministic unwrap, and UV packing.
+- Implemented explicit PBR texture-set import, PBR material creation, and PBR texture role
+  correction with local role/color-space validation.
+- Implemented deterministic local generated texture images, explicit generated-texture saves,
+  generated texture attachment, paint image creation, paint slot assignment, UV-space paint strokes,
+  region fills, bake target images, deterministic bake-pass writes, and baked texture assignment.
+- Updated provider instructions, controlled-operation documentation, the future implementation
+  roadmap, the main project plan, and the test matrix for the new operation families.
+- Added contract tests and expanded the Blender controlled-execution test to cover Tracks B-F.
+- Verified the implementation: 143 pytest tests passed with 10 live tests skipped, Ruff passed, Mypy
+  passed across 62 source files, Blender dependency/context smoke test passed, sample scene tests
+  passed, and Blender controlled execution tests passed.
+- Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 577,400 bytes.
+## 2026-06-30 02:05:57 -04:00
+
+### ComfyUI Texture Provider Connected
+
+- Added a local ComfyUI provider client for server health checks, checkpoint discovery, prompt queueing, history polling, and generated image download.
+- Connected `GENERATE_TEXTURE_IMAGE` to use ComfyUI when `COMFYUI_ENABLED=true`; the existing deterministic generator remains the default fallback.
+- Added ComfyUI provider tests and release-package verification coverage for the new provider file.
+- Verified the local ComfyUI server responds at `http://127.0.0.1:8188`; generation is blocked until a checkpoint model is installed in ComfyUI.
+- Verification: Pytest, Ruff, Mypy, Blender dependency smoke test, Blender controlled execution test, and live local ComfyUI connectivity check.
+
+## 2026-06-30 13:12:39 -04:00
+
+### Temporary ComfyUI Check Button Added
+
+- Added a temporary `Check ComfyUI` button to the Blender assistant panel for local testing.
+- The button verifies that the local ComfyUI server is reachable and reports whether at least one checkpoint is available.
+- Verified the operator in Blender: ComfyUI reported ready with `v1-5-pruned-emaonly-fp16.safetensors`.
+- This is a temporary testing feature intended to be removed before pushing the code to Git.
+
+## 2026-06-30 14:28:16 -04:00
+
+### Deferred Future Tracks G-K Implemented
+
+- Implemented conservative controlled Geometry Nodes preset operations with bounded exposed-input metadata.
+- Implemented generated mesh copy variants: generic generated copies, smoothed copies, displaced copies, remeshed copies, and generated-copy replacement by hiding the original.
+- Implemented sculpt region creation from materials and vertex groups, vertex-group sculpt masks, and bounded sculpt region operations.
+- Implemented safer Track J operations: non-applied Multires modifiers and controlled shape key creation.
+- Implemented bounded local preview image datablocks for review UX.
+- Added contract tests, a Blender future-track execution smoke test, release-check coverage, provider instructions, and documentation updates.
+- Verification: 148 pytest tests passed with 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender dependency smoke test passed, controlled execution tests passed, future-track execution tests passed, and sample scene tests passed.
+
+## 2026-06-30 15:21:48 -04:00
+
+### Deferred Future Track A Implemented
+
+- Implemented controlled shader graph editing operations for assistant-created node removal, explicit shader-link disconnect, bounded color ramp creation and updates, safe shader mix-chain templates, and material output validation/repair.
+- Updated schema validation, semantic validation, risk catalog entries, executor rollback behavior, provider instructions, controlled-operation documentation, the future implementation roadmap, and the test matrix.
+- Added Track A contract tests and a Blender shader graph execution smoke test.
+- Verification: 150 pytest tests passed with 10 live tests skipped, Ruff passed, Mypy passed across 66 source files, Blender dependency smoke test passed, controlled execution tests passed, Track A shader execution tests passed, future-track execution tests passed, and sample scene tests passed.
+
+## 2026-06-30 18:12:34 -04:00
+
+### Controlled Residual Deferred Features Implemented
+
+- Planned and implemented controlled alternatives for the remaining deferred items: shader graph templates, Geometry Nodes group templates, low-resolution render previews, mesh face-set attributes, dynamic-topology-style generated copies, explicit generated-mesh application, and rig-safe shape key updates.
+- Added schema, semantic validation, risk catalog entries, preflight simulation, executor rollback behavior, provider instructions, and documentation updates for the new residual operation family.
+- Added `tests/run_residual_features_tests.py` and included it in the release-check script.
+- Fixed residual execution target resolution for render-preview camera IDs and created valid pass-through Geometry Nodes node groups.
+- Verification: release checks passed with 152 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 67 source files, all Blender smoke tests passed, archive validation passed, isolated install passed, and `dist/blender_ai_assistant-0.1.4.zip` was rebuilt at 594,244 bytes.
+
+## 2026-07-01 01:10:11 -04:00
+
+### Provider Duplication Cleanup
+
+- Addressed review findings around provider-layer duplication by moving shared HTTP retry, retry-delay, request-ID extraction, JSON mapping validation, API error formatting, token integer normalization, and schema-plan validation helpers into `extension/providers/_shared.py`.
+- Refactored OpenAI and NVIDIA providers to use the shared helpers while preserving provider-specific payloads, response text extraction, token usage mapping, and NVIDIA's one-repair validation flow.
+- Consolidated provider label/API-key metadata into the provider registry and removed the unused `PlanningCoordinator.is_running` wrapper plus one thin UI provider-label forwarding helper.
+- Updated release-package verification to require the new shared provider helper.
+- Verification: release checks passed with 152 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 68 source files, all Blender smoke tests passed, archive validation passed, isolated install passed, and `dist/blender_ai_assistant-0.1.4.zip` was rebuilt at 595,167 bytes.
+
+## 2026-07-01 02:21:32 -04:00
+
+### Future Plan And Smoke Test Consolidation
+
+- Deleted `FUTURE_IMPLEMENTATION_PLAN.md` now that the future-track implementation planning has been merged back into the main project plan.
+- Folded the shader Track A, future Tracks G-K, and residual deferred-feature Blender smoke scenarios into `tests/run_execution_tests.py`.
+- Removed the standalone `tests/run_shader_track_tests.py`, `tests/run_future_tracks_tests.py`, and `tests/run_residual_features_tests.py` files.
+- Simplified `scripts/run_release_checks.ps1` so the consolidated execution coverage runs once through `tests/run_execution_tests.py`.
+- Updated the test matrix and main project plan to remove active references to the deleted planning/test files.
+- Verification: release checks passed with 152 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, merged Blender execution tests passed, archive validation passed, isolated install passed, and `dist/blender_ai_assistant-0.1.4.zip` was rebuilt at 595,167 bytes.
+
+
+
+
+## 2026-07-01 23:55:49 -04:00
+
+### OpenAI Image Generation Integrated
+
+- Removed the active ComfyUI provider path, temporary ComfyUI test button, ComfyUI provider test, and ComfyUI release-package requirement.
+- Added an opt-in OpenAI image-generation provider for `GENERATE_TEXTURE_IMAGE` using `POST /v1/images/generations`, `OPENAI_API_KEY`, `gpt-image-2` by default, PNG output, and base64 image decoding.
+- Kept deterministic local texture generation as the default path unless `OPENAI_IMAGE_GENERATION_ENABLED=true` is set.
+- Updated provider documentation, development setup, controlled-operation docs, planner instructions, tests, and release-package verification for the OpenAI Images path.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,170 bytes.
+- Verification: full release checks passed with 155 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.

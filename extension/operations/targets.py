@@ -128,9 +128,19 @@ def _operation_references(operation: Operation) -> tuple[tuple[str, TargetKind],
     if isinstance(cutter_id, str):
         references.append((cutter_id, TargetKind.OBJECT))
 
+    camera_id = operation.payload.get("camera_id")
+    if isinstance(camera_id, str):
+        references.append((camera_id, TargetKind.OBJECT))
+
     material_id = operation.payload.get("material_id")
     if isinstance(material_id, str):
         references.append((material_id, TargetKind.MATERIAL))
+
+    region = operation.payload.get("region")
+    if isinstance(region, Mapping):
+        region_material_id = region.get("material_id")
+        if isinstance(region_material_id, str):
+            references.append((region_material_id, TargetKind.MATERIAL))
 
     collection_id = operation.payload.get("collection_id")
     if isinstance(collection_id, str):

@@ -278,6 +278,7 @@ def _serialize_material(item: MaterialContext) -> dict[str, JsonValue]:
         "diffuse_color": list(item.diffuse_color),
         "metallic": item.metallic,
         "roughness": item.roughness,
+        "node_summary": dict(item.node_summary),
         "custom_properties": dict(item.custom_properties),
     }
 

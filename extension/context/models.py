@@ -92,6 +92,7 @@ class MaterialContext:
     diffuse_color: tuple[float, float, float, float]
     metallic: float
     roughness: float
+    node_summary: Mapping[str, JsonValue]
     custom_properties: Mapping[str, JsonValue]
 
 

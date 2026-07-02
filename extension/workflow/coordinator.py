@@ -173,10 +173,6 @@ class PlanningCoordinator:
             return self._pending_result
 
     @property
-    def is_running(self) -> bool:
-        return self._runtime.is_running
-
-    @property
     def has_background_work(self) -> bool:
         return self._runtime.has_worker
 

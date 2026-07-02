@@ -1,11 +1,13 @@
 """Preflight and execute approved plans on Blender's main thread."""
 
+import hashlib
 import math
 import tempfile
 import threading
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
@@ -15,13 +17,16 @@ from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
 from ..context import SceneContextSnapshot, TargetKind
+from ..providers.openai_images import OpenAIImageProvider, openai_image_generation_enabled
 from .models import Operation, OperationPlan, OperationType, PlanStatus
+from .registries import MESH_PROCESSING_LIMITS, PBR_NON_COLOR_ROLES
 from .targets import RESULT_REFERENCE_PREFIX, resolve_plan_targets
 
 type ProgressCallback = Callable[[int, int], None]
 
 MAX_URL_IMPORT_BYTES = 50 * 1024 * 1024
 URL_IMPORT_TIMEOUT_SECONDS = 60.0
+IMAGE_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".exr"}
 
 
 class ChangeKind(StrEnum):
@@ -103,6 +108,22 @@ class _StagedDeletion:
     target_id: str
     item: Any
     original_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBrushStroke:
+    location: Any
+    normal: Any
+    pressure: float
+    affected_indices: frozenset[int]
+    snapped_to_nearest: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _SculptRegion:
+    name: str
+    target: Any
+    vertex_indices: tuple[int, ...]
 
 
 class _Transaction:
@@ -286,6 +307,15 @@ class _PreflightSimulation:
         self.material_names = {
             item.name: f"material:{int(item.session_uid)}" for item in data.materials
         }
+        self.image_names = {
+            item.name: f"image:{int(item.session_uid)}" for item in data.images
+        }
+        self.image_results: set[str] = set()
+        self.texture_set_results: set[str] = set()
+        self.shader_node_results: set[str] = set()
+        self.uv_maps: dict[str, set[str]] = {}
+        self.modifier_names: dict[str, set[str]] = {}
+        self.shape_key_names: dict[str, set[str]] = {}
         self.scene_collections = set(_scene_collections(context.scene.collection))
         self.collection_names = {
             item.name: f"collection:{int(item.session_uid)}"
@@ -302,6 +332,8 @@ class _PreflightSimulation:
             OperationType.DUPLICATE_OBJECTS: self._duplicate_objects,
             OperationType.SET_TRANSFORM: self._set_transform,
             OperationType.CREATE_MATERIAL: self._create_material,
+            OperationType.CREATE_MATERIAL_PRESET: self._create_material,
+            OperationType.CREATE_PROCEDURAL_MATERIAL: self._create_material,
             OperationType.ASSIGN_MATERIAL: self._assign_material,
             OperationType.ADD_LIGHT: self._add_light,
             OperationType.ADD_CAMERA: self._add_camera,
@@ -320,6 +352,64 @@ class _PreflightSimulation:
             OperationType.BOOLEAN_OPERATION: self._boolean_operation,
             OperationType.JOIN_OBJECTS: self._join_objects,
             OperationType.SEPARATE_OBJECTS: self._separate_objects,
+            OperationType.CREATE_SHADER_NODE: self._create_shader_node,
+            OperationType.SET_SHADER_NODE_VALUE: self._set_shader_node_value,
+            OperationType.CONNECT_SHADER_NODES: self._connect_shader_nodes,
+            OperationType.REMOVE_SHADER_NODE: self._shader_node_operation,
+            OperationType.DISCONNECT_SHADER_LINK: self._shader_node_operation,
+            OperationType.CREATE_SHADER_COLOR_RAMP: self._create_shader_node,
+            OperationType.SET_SHADER_COLOR_RAMP: self._shader_node_operation,
+            OperationType.CREATE_SHADER_MIX_CHAIN: self._create_shader_node,
+            OperationType.CREATE_SHADER_GRAPH_TEMPLATE: self._create_shader_node,
+            OperationType.VALIDATE_MATERIAL_OUTPUT: self._material_operation,
+            OperationType.LOAD_IMAGE_TEXTURE: self._load_image_texture,
+            OperationType.CREATE_IMAGE_TEXTURE_NODE: self._create_image_texture_node,
+            OperationType.SET_TEXTURE_MAPPING: self._set_texture_mapping,
+            OperationType.ASSIGN_UV_MAP: self._assign_uv_map,
+            OperationType.CREATE_UV_MAP: self._create_uv_map,
+            OperationType.UNWRAP_UV_MAP: self._unwrap_uv_map,
+            OperationType.PACK_UV_ISLANDS: self._pack_uv_islands,
+            OperationType.IMPORT_PBR_TEXTURE_SET: self._import_pbr_texture_set,
+            OperationType.CREATE_PBR_MATERIAL: self._create_material,
+            OperationType.SET_PBR_TEXTURE_ROLE: self._set_pbr_texture_role,
+            OperationType.GENERATE_TEXTURE_IMAGE: self._create_image_datablock,
+            OperationType.SAVE_GENERATED_TEXTURE: self._save_generated_texture,
+            OperationType.ATTACH_GENERATED_TEXTURE: self._attach_generated_texture,
+            OperationType.CREATE_PAINT_IMAGE: self._create_image_datablock,
+            OperationType.ASSIGN_PAINT_SLOT: self._assign_paint_slot,
+            OperationType.APPLY_TEXTURE_PAINT_STROKES: self._apply_texture_paint_strokes,
+            OperationType.FILL_TEXTURE_REGION: self._fill_texture_region,
+            OperationType.CREATE_BAKE_TARGET_IMAGE: self._create_image_datablock,
+            OperationType.BAKE_TEXTURE_PASS: self._bake_texture_pass,
+            OperationType.ASSIGN_BAKED_TEXTURE: self._attach_generated_texture,
+            OperationType.ADD_DISPLACE_MODIFIER: self._add_modifier,
+            OperationType.ADD_SMOOTH_MODIFIER: self._add_modifier,
+            OperationType.ADD_REMESH_MODIFIER: self._add_modifier,
+            OperationType.SCULPT_SMOOTH_REGION: self._sculpt_smooth_region,
+            OperationType.APPLY_SCULPT_BRUSH_STROKES: self._apply_sculpt_brush_strokes,
+            OperationType.CREATE_GEOMETRY_NODES_PRESET: self._add_modifier,
+            OperationType.SET_GEOMETRY_NODE_INPUT: self._set_modifier_properties,
+            OperationType.CREATE_GEOMETRY_NODE_GROUP_TEMPLATE: self._add_modifier,
+            OperationType.REMOVE_GEOMETRY_NODES_MODIFIER: self._remove_modifier_preflight,
+            OperationType.CREATE_GENERATED_GEOMETRY_COPY: self._create_generated_copy,
+            OperationType.CREATE_SMOOTHED_COPY: self._create_generated_copy,
+            OperationType.CREATE_DISPLACED_COPY: self._create_generated_copy,
+            OperationType.CREATE_REMESHED_COPY: self._create_generated_copy,
+            OperationType.CREATE_DYNAMIC_TOPOLOGY_COPY: self._create_generated_copy,
+            OperationType.REPLACE_OBJECT_WITH_GENERATED_COPY: self._replace_with_copy,
+            OperationType.APPLY_GENERATED_MESH_TO_OBJECT: self._replace_with_copy,
+            OperationType.CREATE_SCULPT_REGION_FROM_MATERIAL: self._create_sculpt_region,
+            OperationType.CREATE_SCULPT_REGION_FROM_VERTEX_GROUP: self._create_sculpt_region,
+            OperationType.CREATE_SCULPT_MASK: self._create_sculpt_mask,
+            OperationType.CREATE_FACE_SET_FROM_MATERIAL: self._create_face_set,
+            OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: self._create_face_set,
+            OperationType.APPLY_SCULPT_REGION_OPERATION: self._apply_sculpt_region_operation,
+            OperationType.ADD_MULTIRES_MODIFIER: self._add_modifier,
+            OperationType.CREATE_SHAPE_KEY: self._create_shape_key,
+            OperationType.CREATE_RIG_SAFE_SHAPE_KEY: self._create_shape_key,
+            OperationType.SET_SHAPE_KEY_VALUE: self._set_shape_key_value,
+            OperationType.CREATE_PREVIEW_IMAGE: self._create_image_datablock,
+            OperationType.CREATE_RENDER_PREVIEW_IMAGE: self._create_image_datablock,
         }
         handlers[operation.type](operation)
 
@@ -500,6 +590,149 @@ class _PreflightSimulation:
     def _set_material_properties(self, operation: Operation) -> None:
         self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
 
+    def _create_shader_node(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self.shader_node_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _set_shader_node_value(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._shader_node(str(operation.payload["node_ref"]))
+
+    def _connect_shader_nodes(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._shader_node(str(operation.payload["from_node"]))
+        self._shader_node(str(operation.payload["to_node"]))
+
+    def _shader_node_operation(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        for key in ("node_ref", "from_node", "to_node"):
+            node_ref = operation.payload.get(key)
+            if isinstance(node_ref, str):
+                self._shader_node(node_ref)
+
+    def _material_operation(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+
+    def _load_image_texture(self, operation: Operation) -> None:
+        _validate_image_texture_source(str(operation.payload["source"]))
+        name = str(operation.payload["image_name"])
+        reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+        self._reserve_name(self.image_names, name, reference)
+        self.image_results.add(reference)
+
+    def _create_image_texture_node(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._image(str(operation.payload["image_id"]))
+        self.shader_node_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _set_texture_mapping(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._shader_node(str(operation.payload["texture_node_ref"]))
+
+    def _assign_uv_map(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._shader_node(str(operation.payload["texture_node_ref"]))
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+
+    def _create_uv_map(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            uv_name = str(operation.payload["uv_map_name"])
+            uv_maps = self._sim_uv_maps(target)
+            if uv_name in uv_maps:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} already has UV map {uv_name!r}."
+                )
+            uv_maps.add(uv_name)
+
+    def _unwrap_uv_map(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            uv_name = str(operation.payload["uv_map_name"])
+            uv_maps = self._sim_uv_maps(target)
+            exists = uv_name in uv_maps
+            if not exists and not bool(operation.payload["create_if_missing"]):
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} has no UV map {uv_name!r}."
+                )
+            if exists and not bool(operation.payload["overwrite_existing"]):
+                raise ExecutionPreflightError(
+                    f"UNWRAP_UV_MAP needs overwrite_existing for UV map {uv_name!r}."
+                )
+            uv_maps.add(uv_name)
+
+    def _pack_uv_islands(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+
+    def _import_pbr_texture_set(self, operation: Operation) -> None:
+        prefix = str(operation.payload["name_prefix"])
+        for texture in operation.payload["textures"]:
+            _validate_image_texture_source(str(texture["source"]))
+            image_name = f"{prefix}_{texture['role']}"
+            self._reserve_name(
+                self.image_names,
+                image_name,
+                f"pbr:{operation.operation_id}:{texture['role']}",
+            )
+        self.texture_set_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _set_pbr_texture_role(self, operation: Operation) -> None:
+        self._texture_set(str(operation.payload["texture_set_id"]))
+        self._image(str(operation.payload["image_id"]))
+
+    def _create_image_datablock(self, operation: Operation) -> None:
+        name = str(operation.payload.get("image_name", operation.payload.get("preview_name")))
+        reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+        self._reserve_name(self.image_names, name, reference)
+        self.image_results.add(reference)
+
+    def _save_generated_texture(self, operation: Operation) -> None:
+        self._image(str(operation.payload["image_id"]))
+        _validate_texture_save_path(str(operation.payload["filepath"]))
+
+    def _attach_generated_texture(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._image(str(operation.payload["image_id"]))
+        self.shader_node_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _assign_paint_slot(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._image(str(operation.payload["image_id"]))
+        self.shader_node_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _apply_texture_paint_strokes(self, operation: Operation) -> None:
+        self._image(str(operation.payload["image_id"]))
+
+    def _fill_texture_region(self, operation: Operation) -> None:
+        self._image(str(operation.payload["image_id"]))
+
+    def _bake_texture_pass(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._image(str(operation.payload["image_id"]))
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+
+    def _sculpt_smooth_region(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        region = operation.payload["region"]
+        if isinstance(region, Mapping) and isinstance(region.get("material_id"), str):
+            self._target(str(region["material_id"]), TargetKind.MATERIAL)
+
+    def _apply_sculpt_brush_strokes(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+
     def _create_collection(self, operation: Operation) -> None:
         parent_id = operation.payload.get("parent_collection_id")
         self._collection(parent_id)
@@ -541,6 +774,12 @@ class _PreflightSimulation:
                     f"Object {target.live.name!r} already has a modifier named "
                     f"{name!r}."
                 )
+            modifiers = self._sim_modifiers(target)
+            if name in modifiers:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} already has a modifier named {name!r}."
+                )
+            modifiers.add(name)
 
     def _set_modifier_properties(self, operation: Operation) -> None:
         for target_id in operation.target_ids:
@@ -549,10 +788,93 @@ class _PreflightSimulation:
             if target.live is not None and getattr(target.live, "type", "") != "MESH":
                 raise ExecutionPreflightError(f"Object target {target_id} is not a mesh.")
             modifier_name = str(operation.payload["modifier_name"])
-            if target.live is not None and target.live.modifiers.get(modifier_name) is None:
+            if modifier_name not in self._sim_modifiers(target):
                 raise ExecutionPreflightError(
-                    f"Object {target.live.name!r} has no modifier named {modifier_name!r}."
+                    f"Object {target.name!r} has no modifier named {modifier_name!r}."
                 )
+
+    def _remove_modifier_preflight(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        modifier_name = str(operation.payload["modifier_name"])
+        modifiers = self._sim_modifiers(target)
+        if modifier_name not in modifiers:
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no modifier named {modifier_name!r}."
+            )
+        modifiers.remove(modifier_name)
+
+    def _create_generated_copy(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        if target.live is not None:
+            _ensure_mesh_size_within_limits(target.live)
+        self._create_object_result(
+            operation,
+            str(operation.payload["name"]),
+            supports_materials=True,
+            object_type="MESH",
+        )
+
+    def _replace_with_copy(self, operation: Operation) -> None:
+        original = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        generated = self._target(str(operation.payload["generated_object_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(original)
+        self._editable_mesh_object(generated)
+
+    def _create_sculpt_region(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+        self.results[reference] = _SimTarget(
+            TargetKind.OBJECT,
+            reference,
+            str(operation.payload["region_name"]),
+            None,
+            object_type="SCULPT_REGION",
+        )
+
+    def _create_sculpt_mask(self, operation: Operation) -> None:
+        region = self.results.get(str(operation.payload["region_id"]))
+        if region is None or region.object_type != "SCULPT_REGION":
+            raise ExecutionPreflightError("Sculpt region result is unavailable.")
+
+    def _create_face_set(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        material_id = operation.payload.get("material_id")
+        if isinstance(material_id, str):
+            self._target(material_id, TargetKind.MATERIAL)
+        reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+        self.results[reference] = _SimTarget(
+            TargetKind.OBJECT,
+            reference,
+            str(operation.payload["face_set_name"]),
+            None,
+            object_type="FACE_SET",
+        )
+
+    def _apply_sculpt_region_operation(self, operation: Operation) -> None:
+        region = self.results.get(str(operation.payload["region_id"]))
+        if region is None or region.object_type != "SCULPT_REGION":
+            raise ExecutionPreflightError("Sculpt region result is unavailable.")
+
+    def _create_shape_key(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._sim_shape_keys(target).add(str(operation.payload["name"]))
+        source_id = operation.payload["from_generated_object_id"]
+        if source_id is not None:
+            source = self._target(str(source_id), TargetKind.OBJECT)
+            self._editable_mesh_object(source)
+
+    def _set_shape_key_value(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        if str(operation.payload["shape_key_name"]) not in self._sim_shape_keys(target):
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no shape key {operation.payload['shape_key_name']!r}."
+            )
 
     def _create_text_object(self, operation: Operation) -> None:
         self._collection(operation.payload.get("collection_id"))
@@ -630,6 +952,62 @@ class _PreflightSimulation:
             raise ExecutionPreflightError("Linked collections cannot be modified.")
         return collection
 
+    def _shader_node(self, node_ref: str) -> None:
+        if not node_ref.startswith(RESULT_REFERENCE_PREFIX):
+            return
+        if node_ref not in self.shader_node_results:
+            raise ExecutionPreflightError(
+                f"Shader node result {node_ref} is unavailable."
+            )
+
+    def _image(self, image_ref: str) -> None:
+        if image_ref not in self.image_results:
+            raise ExecutionPreflightError(f"Image result {image_ref} is unavailable.")
+
+    def _texture_set(self, texture_set_ref: str) -> None:
+        if texture_set_ref not in self.texture_set_results:
+            raise ExecutionPreflightError(
+                f"Texture set result {texture_set_ref} is unavailable."
+            )
+
+    def _sim_uv_maps(self, target: _SimTarget) -> set[str]:
+        uv_maps = self.uv_maps.get(target.token)
+        if uv_maps is not None:
+            return uv_maps
+        names: set[str] = set()
+        if target.live is not None and getattr(target.live, "type", "") == "MESH":
+            names = {str(layer.name) for layer in target.live.data.uv_layers}
+        self.uv_maps[target.token] = names
+        return names
+
+    def _require_sim_uv_map(self, target: _SimTarget, uv_map_name: str) -> None:
+        if uv_map_name not in self._sim_uv_maps(target):
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no UV map {uv_map_name!r}."
+            )
+
+    def _sim_modifiers(self, target: _SimTarget) -> set[str]:
+        modifiers = self.modifier_names.get(target.token)
+        if modifiers is not None:
+            return modifiers
+        names: set[str] = set()
+        if target.live is not None:
+            names = {str(modifier.name) for modifier in target.live.modifiers}
+        self.modifier_names[target.token] = names
+        return names
+
+    def _sim_shape_keys(self, target: _SimTarget) -> set[str]:
+        shape_keys = self.shape_key_names.get(target.token)
+        if shape_keys is not None:
+            return shape_keys
+        names: set[str] = set()
+        if target.live is not None and getattr(target.live, "type", "") == "MESH":
+            key_blocks = getattr(getattr(target.live.data, "shape_keys", None), "key_blocks", None)
+            if key_blocks is not None:
+                names = {str(key.name) for key in key_blocks}
+        self.shape_key_names[target.token] = names
+        return names
+
     @staticmethod
     def _reserve_name(names: dict[str, str], name: str, token: str) -> None:
         if name in names:
@@ -674,6 +1052,12 @@ def _execute_operation(
             operation, prepared, results, transaction
         ),
         OperationType.CREATE_MATERIAL: lambda: _create_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_MATERIAL_PRESET: lambda: _create_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_PROCEDURAL_MATERIAL: lambda: _create_material(
             operation, results, transaction
         ),
         OperationType.ASSIGN_MATERIAL: lambda: _assign_material(
@@ -728,6 +1112,180 @@ def _execute_operation(
             context, operation, prepared, results, transaction
         ),
         OperationType.SEPARATE_OBJECTS: lambda: _separate_objects(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SHADER_NODE: lambda: _create_shader_node(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SET_SHADER_NODE_VALUE: lambda: _set_shader_node_value(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CONNECT_SHADER_NODES: lambda: _connect_shader_nodes(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REMOVE_SHADER_NODE: lambda: _remove_shader_node_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.DISCONNECT_SHADER_LINK: lambda: _disconnect_shader_link(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SHADER_COLOR_RAMP: lambda: _create_shader_color_ramp(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SET_SHADER_COLOR_RAMP: lambda: _set_shader_color_ramp(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SHADER_MIX_CHAIN: lambda: _create_shader_mix_chain(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SHADER_GRAPH_TEMPLATE: lambda: _create_shader_graph_template(
+            operation, prepared, results, transaction
+        ),
+        OperationType.VALIDATE_MATERIAL_OUTPUT: lambda: _validate_material_output(
+            operation, prepared, results, transaction
+        ),
+        OperationType.LOAD_IMAGE_TEXTURE: lambda: _load_image_texture(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_IMAGE_TEXTURE_NODE: lambda: _create_image_texture_node(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SET_TEXTURE_MAPPING: lambda: _set_texture_mapping(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ASSIGN_UV_MAP: lambda: _assign_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_MAP: lambda: _create_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.UNWRAP_UV_MAP: lambda: _unwrap_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.PACK_UV_ISLANDS: lambda: _pack_uv_islands(
+            operation, prepared, results, transaction
+        ),
+        OperationType.IMPORT_PBR_TEXTURE_SET: lambda: _import_pbr_texture_set(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_PBR_MATERIAL: lambda: _create_pbr_material(
+            operation, results, transaction
+        ),
+        OperationType.SET_PBR_TEXTURE_ROLE: lambda: _set_pbr_texture_role(
+            operation, results, transaction
+        ),
+        OperationType.GENERATE_TEXTURE_IMAGE: lambda: _generate_texture_image(
+            operation, results, transaction
+        ),
+        OperationType.SAVE_GENERATED_TEXTURE: lambda: _save_generated_texture(
+            operation, results, transaction
+        ),
+        OperationType.ATTACH_GENERATED_TEXTURE: lambda: _attach_texture_image(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_PAINT_IMAGE: lambda: _create_paint_image(
+            operation, results, transaction
+        ),
+        OperationType.ASSIGN_PAINT_SLOT: lambda: _assign_paint_slot(
+            operation, prepared, results, transaction
+        ),
+        OperationType.APPLY_TEXTURE_PAINT_STROKES: lambda: _apply_texture_paint_strokes(
+            operation, results, transaction
+        ),
+        OperationType.FILL_TEXTURE_REGION: lambda: _fill_texture_region(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_BAKE_TARGET_IMAGE: lambda: _create_bake_target_image(
+            operation, results, transaction
+        ),
+        OperationType.BAKE_TEXTURE_PASS: lambda: _bake_texture_pass(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ASSIGN_BAKED_TEXTURE: lambda: _attach_texture_image(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ADD_DISPLACE_MODIFIER: lambda: _add_displace_modifier(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ADD_SMOOTH_MODIFIER: lambda: _add_smooth_modifier(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ADD_REMESH_MODIFIER: lambda: _add_remesh_modifier(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SCULPT_SMOOTH_REGION: lambda: _sculpt_smooth_region(
+            operation, prepared, results, transaction
+        ),
+        OperationType.APPLY_SCULPT_BRUSH_STROKES: lambda: _apply_sculpt_brush_strokes(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_GEOMETRY_NODES_PRESET: lambda: _create_geometry_nodes_preset(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SET_GEOMETRY_NODE_INPUT: lambda: _set_geometry_node_input(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_GEOMETRY_NODE_GROUP_TEMPLATE: lambda: (
+            _create_geometry_node_group_template(operation, prepared, results, transaction)
+        ),
+        OperationType.REMOVE_GEOMETRY_NODES_MODIFIER: lambda: _remove_geometry_nodes_modifier(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_GENERATED_GEOMETRY_COPY: lambda: _create_generated_geometry_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SMOOTHED_COPY: lambda: _create_smoothed_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_DISPLACED_COPY: lambda: _create_displaced_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_REMESHED_COPY: lambda: _create_remeshed_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_DYNAMIC_TOPOLOGY_COPY: lambda: _create_dynamic_topology_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.REPLACE_OBJECT_WITH_GENERATED_COPY: lambda: (
+            _replace_object_with_generated_copy(operation, prepared, results, transaction)
+        ),
+        OperationType.APPLY_GENERATED_MESH_TO_OBJECT: lambda: (
+            _apply_generated_mesh_to_object(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_SCULPT_REGION_FROM_MATERIAL: lambda: (
+            _create_sculpt_region_from_material(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_SCULPT_REGION_FROM_VERTEX_GROUP: lambda: (
+            _create_sculpt_region_from_vertex_group(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_SCULPT_MASK: lambda: _create_sculpt_mask(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_FACE_SET_FROM_MATERIAL: lambda: _create_face_set_from_material(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: lambda: (
+            _create_face_set_from_vertex_group(operation, prepared, results, transaction)
+        ),
+        OperationType.APPLY_SCULPT_REGION_OPERATION: lambda: _apply_sculpt_region_operation(
+            operation, results, transaction
+        ),
+        OperationType.ADD_MULTIRES_MODIFIER: lambda: _add_multires_modifier(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SHAPE_KEY: lambda: _create_shape_key(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_RIG_SAFE_SHAPE_KEY: lambda: _create_rig_safe_shape_key(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SET_SHAPE_KEY_VALUE: lambda: _set_shape_key_value(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_PREVIEW_IMAGE: lambda: _create_preview_image(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_RENDER_PREVIEW_IMAGE: lambda: _create_render_preview_image(
             context, operation, prepared, results, transaction
         ),
     }
@@ -960,6 +1518,12 @@ def _create_material(
         principled.inputs["Metallic"].default_value = float(payload["metallic"])
         principled.inputs["Roughness"].default_value = float(payload["roughness"])
         principled.inputs["Alpha"].default_value = alpha
+        _set_principled_optional_inputs(principled, payload)
+        if operation.type in {
+            OperationType.CREATE_MATERIAL_PRESET,
+            OperationType.CREATE_PROCEDURAL_MATERIAL,
+        }:
+            _build_controlled_material_nodes(material_any, payload)
     except Exception:
         _remove_created_material(material)
         raise
@@ -973,7 +1537,7 @@ def _create_material(
             "material",
             material.name,
             ChangeKind.CREATED,
-            "Created Principled BSDF material",
+            f"Created {operation.type.value} material",
         )
     )
 
@@ -1254,6 +1818,971 @@ def _set_material_properties(
     )
 
 
+def _create_shader_node(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    node_tree = material.node_tree
+    node = node_tree.nodes.new(str(operation.payload["node_type"]))
+    try:
+        node.label = str(operation.payload["node_label"])
+        node.name = str(operation.payload["node_label"])
+        node["ai_assistant_created"] = True
+    except Exception:
+        node_tree.nodes.remove(node)
+        raise
+    transaction.add_rollback(partial(_remove_shader_node, node_tree, node))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = node
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            node.name,
+            ChangeKind.CREATED,
+            f"Created shader node {operation.payload['node_type']!s}",
+        )
+    )
+
+
+def _set_shader_node_value(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    node = _runtime_shader_node(material, str(operation.payload["node_ref"]), results)
+    input_name = str(operation.payload["input_name"])
+    socket = node.inputs.get(input_name)
+    if socket is None:
+        raise ExecutionError(f"Shader node {node.name!r} has no input socket {input_name!r}.")
+    old_value = _socket_value(socket)
+    transaction.add_rollback(partial(_restore_socket_value, socket, old_value))
+    _set_socket_value(socket, operation.payload["value"])
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Set shader socket {input_name}",
+        )
+    )
+
+
+def _connect_shader_nodes(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    from_node = _runtime_shader_node(material, str(operation.payload["from_node"]), results)
+    to_node = _runtime_shader_node(material, str(operation.payload["to_node"]), results)
+    from_socket_name = str(operation.payload["from_socket"])
+    to_socket_name = str(operation.payload["to_socket"])
+    from_socket = from_node.outputs.get(from_socket_name)
+    to_socket = to_node.inputs.get(to_socket_name)
+    if from_socket is None:
+        raise ExecutionError(
+            f"Shader node {from_node.name!r} has no output socket {from_socket_name!r}."
+        )
+    if to_socket is None:
+        raise ExecutionError(
+            f"Shader node {to_node.name!r} has no input socket {to_socket_name!r}."
+        )
+    link = material.node_tree.links.new(from_socket, to_socket)
+    transaction.add_rollback(partial(_remove_shader_link, material.node_tree, link))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Connected shader sockets {from_socket_name} to {to_socket_name}",
+        )
+    )
+
+
+def _remove_shader_node_operation(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    node = _runtime_shader_node(material, str(operation.payload["node_ref"]), results)
+    if not _is_assistant_created_node(node):
+        raise ExecutionError("Only assistant-created shader nodes can be removed.")
+    if node.bl_idname == "ShaderNodeOutputMaterial":
+        raise ExecutionError("Material Output cannot be removed.")
+    snapshot = _snapshot_shader_node(node)
+    node_tree = material.node_tree
+    node_tree.nodes.remove(node)
+    transaction.add_rollback(partial(_restore_shader_node_snapshot, node_tree, snapshot))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Removed shader node {snapshot['name']}",
+        )
+    )
+
+
+def _disconnect_shader_link(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    from_node = _runtime_shader_node(material, str(operation.payload["from_node"]), results)
+    to_node = _runtime_shader_node(material, str(operation.payload["to_node"]), results)
+    from_socket = from_node.outputs.get(str(operation.payload["from_socket"]))
+    to_socket = to_node.inputs.get(str(operation.payload["to_socket"]))
+    if from_socket is None or to_socket is None:
+        raise ExecutionError("Shader link endpoints are unavailable.")
+    link = _find_shader_link(material.node_tree, from_socket, to_socket)
+    if link is None:
+        raise ExecutionError("Requested shader link does not exist.")
+    material.node_tree.links.remove(link)
+    transaction.add_rollback(
+        partial(
+            _restore_shader_link,
+            material.node_tree,
+            from_node,
+            from_socket.name,
+            to_node,
+            to_socket.name,
+        )
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Disconnected shader sockets {from_socket.name} to {to_socket.name}",
+        )
+    )
+
+
+def _create_shader_color_ramp(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    node_tree = material.node_tree
+    node = node_tree.nodes.new("ShaderNodeValToRGB")
+    try:
+        node.label = str(operation.payload["node_label"])
+        node.name = str(operation.payload["node_label"])
+        node["ai_assistant_created"] = True
+        _apply_color_ramp_stops(node, tuple(operation.payload["stops"]))
+    except Exception:
+        node_tree.nodes.remove(node)
+        raise
+    transaction.add_rollback(partial(_remove_shader_node, node_tree, node))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = node
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            node.name,
+            ChangeKind.CREATED,
+            "Created shader color ramp",
+        )
+    )
+
+
+def _set_shader_color_ramp(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    node = _runtime_shader_node(material, str(operation.payload["node_ref"]), results)
+    if node.bl_idname != "ShaderNodeValToRGB":
+        raise ExecutionError("SET_SHADER_COLOR_RAMP requires a color ramp node.")
+    old_stops = _color_ramp_stops(node)
+    transaction.add_rollback(partial(_apply_color_ramp_stops, node, old_stops))
+    _apply_color_ramp_stops(node, tuple(operation.payload["stops"]))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Updated color ramp {node.name}",
+        )
+    )
+
+
+def _create_shader_mix_chain(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    template = str(operation.payload["template"])
+    created = _build_shader_mix_chain(material, operation.payload)
+    for node in created:
+        transaction.add_rollback(partial(_remove_shader_node, material.node_tree, node))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = created[0]
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            created[0].name,
+            ChangeKind.CREATED,
+            f"Created shader mix chain {template}",
+        )
+    )
+
+
+def _create_shader_graph_template(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    created = _build_shader_graph_template(material, operation.payload)
+    for node in created:
+        transaction.add_rollback(partial(_remove_shader_node, material.node_tree, node))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = created[0]
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            created[0].name,
+            ChangeKind.CREATED,
+            f"Created shader graph template {operation.payload['template']}",
+        )
+    )
+
+
+def _validate_material_output(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    node_tree = material.node_tree
+    output = node_tree.nodes.get("Material Output")
+    if output is None:
+        if not bool(operation.payload["repair"]):
+            raise ExecutionError("Material has no Material Output node.")
+        output = node_tree.nodes.new("ShaderNodeOutputMaterial")
+        output.name = "Material Output"
+        transaction.add_rollback(partial(_remove_shader_node, node_tree, output))
+    surface = output.inputs.get("Surface")
+    if surface is None:
+        raise ExecutionError("Material Output has no Surface socket.")
+    if surface.links:
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                str(operation.payload["material_id"]),
+                "material",
+                material.name,
+                ChangeKind.UPDATED,
+                "Validated material output",
+            )
+        )
+        return
+    if not bool(operation.payload["repair"]):
+        raise ExecutionError("Material Output surface is not connected.")
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        principled = node_tree.nodes.new("ShaderNodeBsdfPrincipled")
+        principled.name = "Principled BSDF"
+        transaction.add_rollback(partial(_remove_shader_node, node_tree, principled))
+    shader_output = principled.outputs.get("BSDF")
+    if shader_output is None:
+        raise ExecutionError("Principled BSDF has no BSDF output.")
+    link = node_tree.links.new(shader_output, surface)
+    transaction.add_rollback(partial(_remove_shader_link, node_tree, link))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            "Repaired material output",
+        )
+    )
+
+
+def _load_image_texture(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    source = str(operation.payload["source"])
+    max_bytes = int(operation.payload["max_size_mb"]) * 1024 * 1024
+    filepath = _resolve_image_texture_source(source, max_bytes)
+    temporary = filepath.name.startswith("blender_ai_texture_")
+    image = None
+    try:
+        image = cast(Any, bpy.data).images.load(str(filepath), check_existing=False)
+        image.name = str(operation.payload["image_name"])
+        if image.name != str(operation.payload["image_name"]):
+            raise ExecutionError(
+                f"Blender could not assign image name {operation.payload['image_name']!r}."
+            )
+        image.colorspace_settings.name = str(operation.payload["color_space"])
+        if temporary:
+            image.pack()
+    except Exception:
+        if image is not None:
+            _remove_created_image(image)
+        raise
+    finally:
+        if temporary:
+            filepath.unlink(missing_ok=True)
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Loaded image texture",
+        )
+    )
+
+
+def _create_image_texture_node(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    node = _attach_image_to_material(
+        material,
+        image,
+        str(operation.payload["node_label"]),
+        str(operation.payload["connect_to"]),
+        projection=str(operation.payload["projection"]),
+        extension=str(operation.payload["extension"]),
+        uv_map_name=None,
+        transaction=transaction,
+    )
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = node
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            node.name,
+            ChangeKind.CREATED,
+            f"Created image texture node for {image.name}",
+        )
+    )
+
+
+def _set_texture_mapping(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    node = _runtime_shader_node(material, str(operation.payload["texture_node_ref"]), results)
+    mapping = _controlled_mapping_node(material, node)
+    old_values = (
+        _socket_value(mapping.inputs["Location"]),
+        _socket_value(mapping.inputs["Rotation"]),
+        _socket_value(mapping.inputs["Scale"]),
+        getattr(node, "projection", None),
+        getattr(node, "extension", None),
+    )
+    transaction.add_rollback(partial(_restore_texture_mapping, mapping, node, old_values))
+    mapping.inputs["Location"].default_value = tuple(
+        float(value) for value in operation.payload["translation"]
+    )
+    mapping.inputs["Rotation"].default_value = tuple(
+        float(value) for value in operation.payload["rotation"]
+    )
+    mapping.inputs["Scale"].default_value = tuple(
+        float(value) for value in operation.payload["scale"]
+    )
+    node.projection = str(operation.payload["projection"])
+    node.extension = str(operation.payload["extension"])
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Updated texture mapping for {node.name}",
+        )
+    )
+
+
+def _assign_uv_map(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    _require_uv_map(target, str(operation.payload["uv_map_name"]))
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    node = _runtime_shader_node(material, str(operation.payload["texture_node_ref"]), results)
+    uv_node = _controlled_uv_map_node(material, node, transaction)
+    old_uv_map = str(uv_node.uv_map)
+    transaction.add_rollback(partial(_set_uv_node_map, uv_node, old_uv_map))
+    uv_node.uv_map = str(operation.payload["uv_map_name"])
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["target_id"]),
+            "object",
+            target.name,
+            ChangeKind.UPDATED,
+            f"Assigned UV map {uv_node.uv_map} to texture node {node.name}",
+        )
+    )
+
+
+def _create_uv_map(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    uv_name = str(operation.payload["uv_map_name"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        if item.data.uv_layers.get(uv_name) is not None:
+            raise ExecutionError(f"Object {item.name!r} already has UV map {uv_name!r}.")
+        uv_layer = item.data.uv_layers.new(name=uv_name)
+        if bool(operation.payload["set_active"]):
+            item.data.uv_layers.active = uv_layer
+        if bool(operation.payload["set_render"]):
+            uv_layer.active_render = True
+        transaction.add_rollback(partial(_remove_uv_layer, item, uv_name))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Created UV map {uv_name}",
+            )
+        )
+
+
+def _unwrap_uv_map(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    uv_name = str(operation.payload["uv_map_name"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_layer = item.data.uv_layers.get(uv_name)
+        created = False
+        if uv_layer is None:
+            if not bool(operation.payload["create_if_missing"]):
+                raise ExecutionError(f"Object {item.name!r} has no UV map {uv_name!r}.")
+            uv_layer = item.data.uv_layers.new(name=uv_name)
+            created = True
+        elif not bool(operation.payload["overwrite_existing"]):
+            raise ExecutionError(f"UNWRAP_UV_MAP needs overwrite_existing for {uv_name!r}.")
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(
+            partial(_restore_uv_layer, item, uv_name, old_uvs, created)
+        )
+        _write_projected_uvs(item, uv_layer, float(operation.payload["margin"]))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Generated {operation.payload['method']!s} UVs for {uv_name}",
+            )
+        )
+
+
+def _pack_uv_islands(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    uv_name = str(operation.payload["uv_map_name"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_layer = _require_uv_map(item, uv_name)
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+        _normalize_uvs(uv_layer, float(operation.payload["margin"]))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Packed UV map {uv_name}",
+            )
+        )
+
+
+def _import_pbr_texture_set(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    prefix = str(operation.payload["name_prefix"])
+    texture_set: dict[str, Any] = {}
+    created_images: list[Any] = []
+    temporary_paths: list[Path] = []
+    try:
+        for texture in operation.payload["textures"]:
+            role = str(texture["role"])
+            source = str(texture["source"])
+            max_bytes = int(texture["max_size_mb"]) * 1024 * 1024
+            filepath = _resolve_image_texture_source(source, max_bytes)
+            if filepath.name.startswith("blender_ai_texture_"):
+                temporary_paths.append(filepath)
+            image = cast(Any, bpy.data).images.load(str(filepath), check_existing=False)
+            image.name = f"{prefix}_{role}"
+            image.colorspace_settings.name = str(texture["color_space"])
+            if filepath in temporary_paths:
+                image.pack()
+            texture_set[role] = image
+            created_images.append(image)
+    except Exception:
+        for image in created_images:
+            _remove_created_image(image)
+        raise
+    finally:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+    for image in created_images:
+        transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = texture_set
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "texture_set",
+            prefix,
+            ChangeKind.CREATED,
+            f"Imported {len(texture_set)} PBR texture images",
+        )
+    )
+
+
+def _create_pbr_material(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    payload = operation.payload
+    material = bpy.data.materials.new(str(payload["name"]))
+    material_any: Any = material
+    try:
+        material_any.use_nodes = True
+        material_any.diffuse_color = (
+            float(payload["base_color"][0]),
+            float(payload["base_color"][1]),
+            float(payload["base_color"][2]),
+            float(payload["alpha"]),
+        )
+        material_any.metallic = float(payload["metallic"])
+        material_any.roughness = float(payload["roughness"])
+        principled = material_any.node_tree.nodes.get("Principled BSDF")
+        if principled is None:
+            raise ExecutionError("The new PBR material has no Principled BSDF node.")
+        principled.inputs["Base Color"].default_value = material_any.diffuse_color
+        principled.inputs["Metallic"].default_value = float(payload["metallic"])
+        principled.inputs["Roughness"].default_value = float(payload["roughness"])
+        principled.inputs["Alpha"].default_value = float(payload["alpha"])
+        for role, image in _pbr_material_images(payload, results).items():
+            _attach_pbr_image_node(material_any, image, role)
+    except Exception:
+        _remove_created_material(material)
+        raise
+    transaction.add_rollback(partial(_remove_created_material, material))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = material
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "material",
+            material.name,
+            ChangeKind.CREATED,
+            "Created PBR material",
+        )
+    )
+
+
+def _set_pbr_texture_role(
+    operation: Operation,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    texture_set = _runtime_texture_set(str(operation.payload["texture_set_id"]), results)
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    role = str(operation.payload["role"])
+    old_image = texture_set.get(role)
+    old_color_space = str(image.colorspace_settings.name)
+    transaction.add_rollback(
+        partial(_restore_pbr_texture_role, texture_set, role, old_image, image, old_color_space)
+    )
+    image.colorspace_settings.name = str(operation.payload["color_space"])
+    texture_set[role] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["texture_set_id"]),
+            "texture_set",
+            role,
+            ChangeKind.UPDATED,
+            f"Set PBR role {role} to image {image.name}",
+        )
+    )
+
+
+def _generate_texture_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    if openai_image_generation_enabled():
+        _generate_texture_image_with_openai(operation, results, transaction)
+        return
+
+    image = _new_filled_image(
+        str(operation.payload["image_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        _float4(operation.payload["base_color"]),
+        str(operation.payload["color_space"]),
+        pack=False,
+    )
+    try:
+        _write_generated_pattern(
+            image,
+            str(operation.payload["prompt"]),
+            str(operation.payload["pattern"]),
+            _float4(operation.payload["base_color"]),
+            _float4(operation.payload["secondary_color"]),
+        )
+        image["ai_generated_prompt"] = str(operation.payload["prompt"])
+        image["ai_generated_pattern"] = str(operation.payload["pattern"])
+        if bool(operation.payload["pack"]):
+            image.pack()
+    except Exception:
+        _remove_created_image(image)
+        raise
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Generated deterministic texture image",
+        )
+    )
+
+
+def _generate_texture_image_with_openai(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    image_name = str(operation.payload["image_name"])
+    width = int(operation.payload["width"])
+    height = int(operation.payload["height"])
+    suffix = f"{operation.operation_id}_{uuid.uuid4().hex[:8]}"
+    destination = Path(tempfile.gettempdir()) / "blender_ai_assistant" / f"{suffix}.png"
+    provider = OpenAIImageProvider.from_environment()
+    provider.generate_texture(
+        prompt=str(operation.payload["prompt"]),
+        width=width,
+        height=height,
+        destination=destination,
+    )
+
+    images: Any = cast(Any, bpy.data).images
+    image = images.load(str(destination), check_existing=False)
+    image.name = image_name
+    if int(image.size[0]) != width or int(image.size[1]) != height:
+        image.scale(width, height)
+    image.colorspace_settings.name = str(operation.payload["color_space"])
+    image["ai_generated_prompt"] = str(operation.payload["prompt"])
+    image["ai_generated_provider"] = "OpenAI Images"
+    image["ai_generated_source"] = str(destination)
+    if bool(operation.payload["pack"]):
+        image.pack()
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Generated texture image with OpenAI Images",
+        )
+    )
+
+
+def _save_generated_texture(
+    operation: Operation,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    filepath = _validate_texture_save_path(str(operation.payload["filepath"]))
+    old_filepath = str(image.filepath_raw)
+    old_format = str(image.file_format)
+    image.filepath_raw = str(filepath)
+    image.file_format = str(operation.payload["file_format"])
+    image.save()
+    if bool(operation.payload["pack_after_save"]):
+        image.pack()
+    transaction.add_rollback(
+        partial(_restore_saved_image, image, old_filepath, old_format, filepath)
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["image_id"]),
+            "image",
+            image.name,
+            ChangeKind.UPDATED,
+            f"Saved image to {filepath.name}",
+        )
+    )
+
+
+def _attach_texture_image(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    node = _attach_image_to_material(
+        material,
+        image,
+        str(operation.payload["node_label"]),
+        str(operation.payload["connect_to"]),
+        projection="FLAT",
+        extension="REPEAT",
+        uv_map_name=operation.payload.get("uv_map_name"),
+        transaction=transaction,
+    )
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = node
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            node.name,
+            ChangeKind.CREATED,
+            f"Attached texture image {image.name}",
+        )
+    )
+
+
+def _create_paint_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    _create_named_image_result(operation, results, transaction, "Created paint image")
+
+
+def _assign_paint_slot(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    _require_uv_map(target, str(operation.payload["uv_map_name"]))
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    node = _attach_image_to_material(
+        material,
+        image,
+        str(operation.payload["node_label"]),
+        str(operation.payload["connect_to"]),
+        projection="FLAT",
+        extension="REPEAT",
+        uv_map_name=str(operation.payload["uv_map_name"]),
+        transaction=transaction,
+    )
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = node
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            node.name,
+            ChangeKind.CREATED,
+            f"Assigned paint slot on {target.name}",
+        )
+    )
+
+
+def _apply_texture_paint_strokes(
+    operation: Operation,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    old_pixels = _image_pixels(image)
+    transaction.add_rollback(partial(_restore_image_pixels, image, old_pixels))
+    _paint_image_strokes(
+        image,
+        tuple(operation.payload["strokes"]),
+        str(operation.payload["blend_mode"]),
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["image_id"]),
+            "image",
+            image.name,
+            ChangeKind.UPDATED,
+            f"Applied {len(operation.payload['strokes'])} texture paint strokes",
+        )
+    )
+
+
+def _fill_texture_region(
+    operation: Operation,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    old_pixels = _image_pixels(image)
+    transaction.add_rollback(partial(_restore_image_pixels, image, old_pixels))
+    _fill_image_region(
+        image,
+        operation.payload["region"],
+        _float4(operation.payload["color"]),
+        float(operation.payload["strength"]),
+        str(operation.payload["blend_mode"]),
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["image_id"]),
+            "image",
+            image.name,
+            ChangeKind.UPDATED,
+            "Filled texture image region",
+        )
+    )
+
+
+def _create_bake_target_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    _create_named_image_result(operation, results, transaction, "Created bake target image")
+
+
+def _bake_texture_pass(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    _require_uv_map(target, str(operation.payload["uv_map_name"]))
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    old_pixels = _image_pixels(image)
+    transaction.add_rollback(partial(_restore_image_pixels, image, old_pixels))
+    _write_bake_pass_image(image, target, str(operation.payload["pass_type"]))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["image_id"]),
+            "image",
+            image.name,
+            ChangeKind.UPDATED,
+            f"Baked deterministic {operation.payload['pass_type']!s} texture pass",
+        )
+    )
+
+
 def _create_collection(
     context: Any,
     operation: Operation,
@@ -1427,6 +2956,113 @@ def _set_modifier_properties(
                 item.name,
                 ChangeKind.UPDATED,
                 f"Updated modifier {modifier_name}",
+            )
+        )
+
+
+def _add_displace_modifier(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        name = str(operation.payload["name"])
+        texture_name = f"{name} Texture"
+        texture = cast(Any, bpy.data).textures.new(
+            texture_name,
+            type=_blender_texture_type(str(operation.payload["texture_pattern"])),
+        )
+        modifier = item.modifiers.new(name, "DISPLACE")
+        try:
+            texture.noise_scale = float(operation.payload["texture_scale"])
+            modifier.texture = texture
+            modifier.strength = float(operation.payload["strength"])
+            modifier.mid_level = float(operation.payload["midlevel"])
+            if hasattr(modifier, "texture_coords"):
+                modifier.texture_coords = str(operation.payload["coordinates"]).upper()
+        except Exception:
+            item.modifiers.remove(modifier)
+            _remove_created_texture(texture)
+            raise
+        transaction.add_rollback(
+            partial(_remove_displace_modifier, item, modifier.name, texture)
+        )
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Added Displace modifier",
+            )
+        )
+
+
+def _add_smooth_modifier(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        modifier = item.modifiers.new(str(operation.payload["name"]), "SMOOTH")
+        try:
+            modifier.factor = float(operation.payload["factor"])
+            modifier.iterations = int(operation.payload["iterations"])
+        except Exception:
+            item.modifiers.remove(modifier)
+            raise
+        transaction.add_rollback(partial(_remove_modifier, item, modifier.name))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Added Smooth modifier",
+            )
+        )
+
+
+def _add_remesh_modifier(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        modifier = item.modifiers.new(str(operation.payload["name"]), "REMESH")
+        try:
+            modifier.mode = str(operation.payload["mode"]).upper()
+            if hasattr(modifier, "voxel_size"):
+                modifier.voxel_size = float(operation.payload["voxel_size"])
+            if hasattr(modifier, "adaptivity"):
+                modifier.adaptivity = float(operation.payload["adaptivity"])
+            if hasattr(modifier, "use_remove_disconnected"):
+                modifier.use_remove_disconnected = not bool(operation.payload["preserve_volume"])
+        except Exception:
+            item.modifiers.remove(modifier)
+            raise
+        transaction.add_rollback(partial(_remove_modifier, item, modifier.name))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Added Remesh modifier",
             )
         )
 
@@ -1769,6 +3405,82 @@ def _separate_objects(
         _stage_object_deletion(operation.operation_id, target_id, target, transaction)
 
 
+def _sculpt_smooth_region(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    vertex_indices = _region_vertex_indices(item, operation.payload["region"], prepared, results)
+    old_positions = _mesh_vertex_positions(item, vertex_indices)
+    transaction.add_rollback(partial(_restore_mesh_vertices, item, old_positions))
+    _smooth_mesh_vertices(
+        item,
+        vertex_indices,
+        float(operation.payload["strength"]),
+        int(operation.payload["iterations"]),
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            target_id,
+            "object",
+            item.name,
+            ChangeKind.UPDATED,
+            f"Smoothed {len(vertex_indices)} mesh vertices",
+        )
+    )
+
+
+def _apply_sculpt_brush_strokes(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    radius = float(operation.payload["radius"])
+    strokes = _prepare_brush_strokes(item, tuple(operation.payload["strokes"]), radius)
+    affected = _prepared_brush_affected_vertices(strokes)
+    if not affected:
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Skipped sculpt brush strokes because the target mesh has no vertices",
+            )
+        )
+        return
+    old_positions = _mesh_vertex_positions(item, tuple(sorted(affected)))
+    transaction.add_rollback(partial(_restore_mesh_vertices, item, old_positions))
+    _apply_brush_strokes(
+        item,
+        strokes,
+        str(operation.payload["brush_type"]),
+        radius,
+        float(operation.payload["strength"]),
+        str(operation.payload["falloff"]),
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            target_id,
+            "object",
+            item.name,
+            ChangeKind.UPDATED,
+            _brush_stroke_detail(strokes),
+        )
+    )
+
+
 def _runtime_target(
     target_id: str,
     prepared: PreparedExecution,
@@ -1783,6 +3495,547 @@ def _runtime_target(
         return prepared.resolved_targets[target_id]
     except KeyError as error:
         raise ExecutionError(f"Snapshot target {target_id} is unavailable.") from error
+
+
+def _runtime_image(image_id: str, results: Mapping[str, Any]) -> Any:
+    if not image_id.startswith(RESULT_REFERENCE_PREFIX):
+        raise ExecutionError("Image references must use result:<operation_id>.")
+    image = results.get(image_id)
+    if image is None:
+        raise ExecutionError(f"Image result {image_id} is unavailable.")
+    if not hasattr(image, "pixels"):
+        raise ExecutionError(f"Result {image_id} is not an image.")
+    return image
+
+
+def _runtime_texture_set(texture_set_id: str, results: Mapping[str, Any]) -> dict[str, Any]:
+    if not texture_set_id.startswith(RESULT_REFERENCE_PREFIX):
+        raise ExecutionError("Texture set references must use result:<operation_id>.")
+    texture_set = results.get(texture_set_id)
+    if not isinstance(texture_set, dict):
+        raise ExecutionError(f"Texture set result {texture_set_id} is unavailable.")
+    return texture_set
+
+
+def _runtime_shader_node(material: Any, node_ref: str, results: Mapping[str, Any]) -> Any:
+    if node_ref.startswith(RESULT_REFERENCE_PREFIX):
+        node = results.get(node_ref)
+        if node is None:
+            raise ExecutionError(f"Shader node result {node_ref} is unavailable.")
+        return node
+    nodes = material.node_tree.nodes
+    if node_ref == "principled_bsdf":
+        node = nodes.get("Principled BSDF")
+    elif node_ref == "material_output":
+        node = nodes.get("Material Output")
+    else:
+        node = None
+    if node is None:
+        raise ExecutionError(f"Shader node {node_ref!r} is unavailable.")
+    return node
+
+
+def _attach_image_to_material(
+    material: Any,
+    image: Any,
+    node_label: str,
+    connect_to: str,
+    *,
+    projection: str,
+    extension: str,
+    uv_map_name: Any,
+    transaction: _Transaction,
+) -> Any:
+    material.use_nodes = True
+    node_tree = material.node_tree
+    image_node = node_tree.nodes.new("ShaderNodeTexImage")
+    mapping_node = node_tree.nodes.new("ShaderNodeMapping")
+    coordinate_node = node_tree.nodes.new("ShaderNodeTexCoord")
+    uv_node = None
+    try:
+        image_node.label = node_label
+        image_node.name = node_label
+        image_node.image = image
+        image_node.projection = projection
+        image_node.extension = extension
+        mapping_node.label = f"AI Mapping {node_label}"
+        mapping_node.name = f"AI Mapping {node_label}"
+        coordinate_node.label = f"AI Coordinates {node_label}"
+        coordinate_node.name = f"AI Coordinates {node_label}"
+        if isinstance(uv_map_name, str):
+            uv_node = node_tree.nodes.new("ShaderNodeUVMap")
+            uv_node.label = f"AI UV {node_label}"
+            uv_node.name = f"AI UV {node_label}"
+            uv_node.uv_map = uv_map_name
+            node_tree.links.new(uv_node.outputs["UV"], mapping_node.inputs["Vector"])
+        else:
+            node_tree.links.new(coordinate_node.outputs["UV"], mapping_node.inputs["Vector"])
+        node_tree.links.new(mapping_node.outputs["Vector"], image_node.inputs["Vector"])
+        target_node = node_tree.nodes.get("Principled BSDF")
+        if target_node is None:
+            raise ExecutionError(f"Material {material.name!r} has no Principled BSDF node.")
+        target_socket = target_node.inputs.get(connect_to)
+        if target_socket is None:
+            raise ExecutionError(f"Principled BSDF has no input socket {connect_to!r}.")
+        output_name = "Alpha" if connect_to == "Alpha" else "Color"
+        node_tree.links.new(image_node.outputs[output_name], target_socket)
+    except Exception:
+        for node in (uv_node, coordinate_node, mapping_node, image_node):
+            if node is not None:
+                _remove_shader_node(node_tree, node)
+        raise
+    for node in (image_node, mapping_node, coordinate_node, uv_node):
+        if node is not None:
+            transaction.add_rollback(partial(_remove_shader_node, node_tree, node))
+    return image_node
+
+
+def _controlled_mapping_node(material: Any, image_node: Any) -> Any:
+    vector_socket = image_node.inputs.get("Vector")
+    if vector_socket is None:
+        raise ExecutionError(f"Texture node {image_node.name!r} has no Vector input.")
+    for link in vector_socket.links:
+        from_node = link.from_node
+        if getattr(from_node, "bl_idname", "") == "ShaderNodeMapping":
+            return from_node
+    raise ExecutionError(f"Texture node {image_node.name!r} has no controlled mapping node.")
+
+
+def _controlled_uv_map_node(material: Any, image_node: Any, transaction: _Transaction) -> Any:
+    node_tree = material.node_tree
+    mapping = _controlled_mapping_node(material, image_node)
+    vector_socket = mapping.inputs.get("Vector")
+    if vector_socket is None:
+        raise ExecutionError(f"Mapping node {mapping.name!r} has no Vector input.")
+    for link in vector_socket.links:
+        from_node = link.from_node
+        if getattr(from_node, "bl_idname", "") == "ShaderNodeUVMap":
+            return from_node
+    for link in tuple(vector_socket.links):
+        node_tree.links.remove(link)
+    uv_node = node_tree.nodes.new("ShaderNodeUVMap")
+    uv_node.label = f"AI UV {image_node.name}"
+    uv_node.name = f"AI UV {image_node.name}"
+    node_tree.links.new(uv_node.outputs["UV"], vector_socket)
+    transaction.add_rollback(partial(_remove_shader_node, node_tree, uv_node))
+    return uv_node
+
+
+def _restore_texture_mapping(mapping: Any, image_node: Any, values: tuple[Any, ...]) -> None:
+    location, rotation, scale, projection, extension = values
+    mapping.inputs["Location"].default_value = location
+    mapping.inputs["Rotation"].default_value = rotation
+    mapping.inputs["Scale"].default_value = scale
+    if projection is not None:
+        image_node.projection = projection
+    if extension is not None:
+        image_node.extension = extension
+
+
+def _set_uv_node_map(node: Any, uv_map_name: str) -> None:
+    node.uv_map = uv_map_name
+
+
+def _require_uv_map(item: Any, uv_map_name: str) -> Any:
+    _require_mesh_object(item, getattr(item, "name", "unknown"))
+    uv_layer = item.data.uv_layers.get(uv_map_name)
+    if uv_layer is None:
+        raise ExecutionError(f"Object {item.name!r} has no UV map {uv_map_name!r}.")
+    return uv_layer
+
+
+def _remove_uv_layer(item: Any, uv_map_name: str) -> None:
+    uv_layer = item.data.uv_layers.get(uv_map_name)
+    if uv_layer is not None:
+        item.data.uv_layers.remove(uv_layer)
+
+
+def _uv_layer_values(uv_layer: Any) -> tuple[tuple[float, float], ...]:
+    return tuple((float(loop.uv[0]), float(loop.uv[1])) for loop in uv_layer.data)
+
+
+def _restore_uv_layer(
+    item: Any,
+    uv_map_name: str,
+    values: tuple[tuple[float, float], ...],
+    remove_if_created: bool,
+) -> None:
+    uv_layer = item.data.uv_layers.get(uv_map_name)
+    if remove_if_created:
+        if uv_layer is not None:
+            item.data.uv_layers.remove(uv_layer)
+        return
+    if uv_layer is None:
+        uv_layer = item.data.uv_layers.new(name=uv_map_name)
+    for loop, value in zip(uv_layer.data, values, strict=True):
+        loop.uv = value
+
+
+def _write_projected_uvs(item: Any, uv_layer: Any, margin: float) -> None:
+    mesh = item.data
+    coordinates = [vertex.co.copy() for vertex in mesh.vertices]
+    if not coordinates:
+        return
+    min_x = min(float(coordinate.x) for coordinate in coordinates)
+    max_x = max(float(coordinate.x) for coordinate in coordinates)
+    min_y = min(float(coordinate.y) for coordinate in coordinates)
+    max_y = max(float(coordinate.y) for coordinate in coordinates)
+    span_x = max(max_x - min_x, 1e-9)
+    span_y = max(max_y - min_y, 1e-9)
+    usable = max(0.0, 1.0 - margin * 2.0)
+    for polygon in mesh.polygons:
+        for loop_index, vertex_index in zip(polygon.loop_indices, polygon.vertices, strict=True):
+            coordinate = coordinates[int(vertex_index)]
+            u = margin + ((float(coordinate.x) - min_x) / span_x) * usable
+            v = margin + ((float(coordinate.y) - min_y) / span_y) * usable
+            uv_layer.data[int(loop_index)].uv = (u, v)
+    mesh.update()
+
+
+def _normalize_uvs(uv_layer: Any, margin: float) -> None:
+    values = _uv_layer_values(uv_layer)
+    if not values:
+        return
+    min_u = min(value[0] for value in values)
+    max_u = max(value[0] for value in values)
+    min_v = min(value[1] for value in values)
+    max_v = max(value[1] for value in values)
+    span_u = max(max_u - min_u, 1e-9)
+    span_v = max(max_v - min_v, 1e-9)
+    usable = max(0.0, 1.0 - margin * 2.0)
+    for loop in uv_layer.data:
+        loop.uv = (
+            margin + ((float(loop.uv[0]) - min_u) / span_u) * usable,
+            margin + ((float(loop.uv[1]) - min_v) / span_v) * usable,
+        )
+
+
+def _pbr_material_images(payload: Mapping[str, Any], results: Mapping[str, Any]) -> dict[str, Any]:
+    images: dict[str, Any] = {}
+    texture_set_id = payload["texture_set_id"]
+    if isinstance(texture_set_id, str):
+        images.update(_runtime_texture_set(texture_set_id, results))
+    field_roles = {
+        "base_color_image_id": "base_color",
+        "roughness_image_id": "roughness",
+        "metallic_image_id": "metallic",
+        "normal_image_id": "normal",
+        "ambient_occlusion_image_id": "ambient_occlusion",
+        "displacement_image_id": "displacement",
+        "alpha_image_id": "alpha",
+        "emission_image_id": "emission",
+    }
+    for field_name, role in field_roles.items():
+        image_id = payload[field_name]
+        if isinstance(image_id, str):
+            images[role] = _runtime_image(image_id, results)
+    return images
+
+
+def _attach_pbr_image_node(material: Any, image: Any, role: str) -> None:
+    node_tree = material.node_tree
+    image_node = node_tree.nodes.new("ShaderNodeTexImage")
+    image_node.label = f"AI PBR {role}"
+    image_node.name = f"AI PBR {role}"
+    image_node.image = image
+    if role in PBR_NON_COLOR_ROLES:
+        image.colorspace_settings.name = "Non-Color"
+    principled = node_tree.nodes.get("Principled BSDF")
+    output = node_tree.nodes.get("Material Output")
+    if principled is None:
+        raise ExecutionError("PBR material has no Principled BSDF node.")
+    role_inputs = {
+        "base_color": "Base Color",
+        "roughness": "Roughness",
+        "metallic": "Metallic",
+        "alpha": "Alpha",
+        "emission": "Emission Color",
+    }
+    if role in role_inputs and principled.inputs.get(role_inputs[role]) is not None:
+        output_name = "Alpha" if role == "alpha" else "Color"
+        node_tree.links.new(image_node.outputs[output_name], principled.inputs[role_inputs[role]])
+    elif role == "normal":
+        normal = node_tree.nodes.new("ShaderNodeNormalMap")
+        normal.label = "AI PBR Normal"
+        normal.name = "AI PBR Normal"
+        node_tree.links.new(image_node.outputs["Color"], normal.inputs["Color"])
+        node_tree.links.new(normal.outputs["Normal"], principled.inputs["Normal"])
+    elif role == "displacement" and output is not None and output.inputs.get("Displacement"):
+        node_tree.links.new(image_node.outputs["Color"], output.inputs["Displacement"])
+
+
+def _restore_pbr_texture_role(
+    texture_set: dict[str, Any],
+    role: str,
+    old_image: Any,
+    image: Any,
+    old_color_space: str,
+) -> None:
+    image.colorspace_settings.name = old_color_space
+    if old_image is None:
+        texture_set.pop(role, None)
+    else:
+        texture_set[role] = old_image
+
+
+def _new_filled_image(
+    name: str,
+    width: int,
+    height: int,
+    color: tuple[float, float, float, float],
+    color_space: str,
+    *,
+    pack: bool,
+) -> Any:
+    import bpy
+
+    image = cast(Any, bpy.data).images.new(name, width=width, height=height, alpha=True)
+    image.colorspace_settings.name = color_space
+    _fill_pixels(image, color)
+    if pack:
+        image.pack()
+    return image
+
+
+def _create_named_image_result(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    detail: str,
+) -> None:
+    image = _new_filled_image(
+        str(operation.payload["image_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        _float4(operation.payload["fill_color"]),
+        str(operation.payload["color_space"]),
+        pack=bool(operation.payload["pack"]),
+    )
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            detail,
+        )
+    )
+
+
+def _fill_pixels(image: Any, color: tuple[float, float, float, float]) -> None:
+    width, height = int(image.size[0]), int(image.size[1])
+    image.pixels[:] = list(color) * (width * height)
+
+
+def _float4(values: Any) -> tuple[float, float, float, float]:
+    return (
+        float(values[0]),
+        float(values[1]),
+        float(values[2]),
+        float(values[3]),
+    )
+
+
+def _pixel4(values: list[float], index: int) -> tuple[float, float, float, float]:
+    return (
+        float(values[index]),
+        float(values[index + 1]),
+        float(values[index + 2]),
+        float(values[index + 3]),
+    )
+
+
+def _write_generated_pattern(
+    image: Any,
+    prompt: str,
+    pattern: str,
+    base_color: tuple[float, float, float, float],
+    secondary_color: tuple[float, float, float, float],
+) -> None:
+    width, height = int(image.size[0]), int(image.size[1])
+    digest = hashlib.sha256(prompt.encode("utf-8")).digest()
+    pixels: list[float] = []
+    for y in range(height):
+        for x in range(width):
+            if pattern == "solid":
+                color = base_color
+            elif pattern == "checker":
+                color = base_color if ((x // 8 + y // 8) % 2 == 0) else secondary_color
+            elif pattern == "gradient":
+                factor = x / max(width - 1, 1)
+                color = _mix_color(base_color, secondary_color, factor)
+            else:
+                noise = digest[(x * 31 + y * 17) % len(digest)] / 255.0
+                color = _mix_color(base_color, secondary_color, noise)
+            pixels.extend(color)
+    image.pixels[:] = pixels
+
+
+def _image_pixels(image: Any) -> tuple[float, ...]:
+    return tuple(float(value) for value in image.pixels[:])
+
+
+def _restore_image_pixels(image: Any, pixels: tuple[float, ...]) -> None:
+    image.pixels[:] = pixels
+
+
+def _paint_image_strokes(
+    image: Any,
+    strokes: tuple[Mapping[str, Any], ...],
+    blend_mode: str,
+) -> None:
+    width, height = int(image.size[0]), int(image.size[1])
+    pixels = list(float(value) for value in image.pixels[:])
+    for stroke in strokes:
+        center_u, center_v = (float(value) for value in stroke["uv"])
+        radius = float(stroke["radius"])
+        color = _float4(stroke["color"])
+        strength = float(stroke["strength"])
+        min_x = max(0, int((center_u - radius) * width))
+        max_x = min(width - 1, int((center_u + radius) * width))
+        min_y = max(0, int((center_v - radius) * height))
+        max_y = min(height - 1, int((center_v + radius) * height))
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                u = (x + 0.5) / width
+                v = (y + 0.5) / height
+                distance = math.dist((u, v), (center_u, center_v))
+                if distance > radius:
+                    continue
+                factor = strength * (1.0 - distance / max(radius, 1e-9))
+                index = (y * width + x) * 4
+                current = _pixel4(pixels, index)
+                blended = _blend_texture_color(current, color, factor, blend_mode)
+                pixels[index : index + 4] = blended
+    image.pixels[:] = pixels
+
+
+def _fill_image_region(
+    image: Any,
+    region: Mapping[str, Any],
+    color: tuple[float, float, float, float],
+    strength: float,
+    blend_mode: str,
+) -> None:
+    width, height = int(image.size[0]), int(image.size[1])
+    if region["kind"] == "full":
+        min_u, min_v, max_u, max_v = 0.0, 0.0, 1.0, 1.0
+    else:
+        min_uv = region["min_uv"]
+        max_uv = region["max_uv"]
+        min_u, min_v = float(min_uv[0]), float(min_uv[1])
+        max_u, max_v = float(max_uv[0]), float(max_uv[1])
+    min_x = max(0, int(min_u * width))
+    max_x = min(width - 1, int(max_u * width))
+    min_y = max(0, int(min_v * height))
+    max_y = min(height - 1, int(max_v * height))
+    pixels = list(float(value) for value in image.pixels[:])
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            index = (y * width + x) * 4
+            current = _pixel4(pixels, index)
+            pixels[index : index + 4] = _blend_texture_color(
+                current,
+                color,
+                strength,
+                blend_mode,
+            )
+    image.pixels[:] = pixels
+
+
+def _write_bake_pass_image(image: Any, target: Any, pass_type: str) -> None:
+    material = target.active_material
+    diffuse = (
+        _float4(material.diffuse_color)
+        if material is not None
+        else (0.8, 0.8, 0.8, 1.0)
+    )
+    if pass_type == "base_color":
+        color = diffuse
+    elif pass_type == "roughness":
+        roughness = float(getattr(material, "roughness", 0.5)) if material else 0.5
+        color = (roughness, roughness, roughness, 1.0)
+    elif pass_type == "metallic":
+        metallic = float(getattr(material, "metallic", 0.0)) if material else 0.0
+        color = (metallic, metallic, metallic, 1.0)
+    elif pass_type == "normal":
+        color = (0.5, 0.5, 1.0, 1.0)
+    elif pass_type == "ambient_occlusion":
+        color = (0.75, 0.75, 0.75, 1.0)
+    else:
+        color = diffuse
+    _fill_pixels(image, color)
+    image["ai_bake_pass"] = pass_type
+    image["ai_bake_source"] = target.name
+
+
+def _mix_color(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+    factor: float,
+) -> tuple[float, float, float, float]:
+    clamped = max(0.0, min(1.0, factor))
+    return cast(
+        tuple[float, float, float, float],
+        tuple(
+            first[index] * (1.0 - clamped) + second[index] * clamped
+            for index in range(4)
+        ),
+    )
+
+
+def _blend_texture_color(
+    current: tuple[float, float, float, float],
+    color: tuple[float, float, float, float],
+    strength: float,
+    blend_mode: str,
+) -> tuple[float, float, float, float]:
+    strength = max(0.0, min(1.0, strength))
+    if blend_mode == "replace":
+        target = color
+    elif blend_mode == "multiply":
+        target = cast(
+            tuple[float, float, float, float],
+            tuple(current[index] * color[index] for index in range(4)),
+        )
+    elif blend_mode == "add":
+        target = cast(
+            tuple[float, float, float, float],
+            tuple(min(1.0, current[index] + color[index]) for index in range(4)),
+        )
+    else:
+        target = color
+    return _mix_color(current, target, strength)
+
+
+def _validate_texture_save_path(filepath: str) -> Path:
+    if _is_url(filepath):
+        raise ExecutionPreflightError("Texture output paths must be local files.")
+    path = Path(filepath).expanduser()
+    if not path.is_absolute():
+        path = path.resolve()
+    if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+        raise ExecutionPreflightError("Texture output path must use PNG, JPEG, or TIFF.")
+    if not path.parent.exists():
+        raise ExecutionPreflightError(f"Texture output directory does not exist: {path.parent}.")
+    if path.exists():
+        raise ExecutionPreflightError(f"Texture output file already exists: {path}.")
+    return path
+
+
+def _restore_saved_image(
+    image: Any,
+    filepath: str,
+    file_format: str,
+    created_path: Path,
+) -> None:
+    image.filepath_raw = filepath
+    image.file_format = file_format
+    created_path.unlink(missing_ok=True)
 
 
 def _asset_suffixes(asset_format: str) -> set[str]:
@@ -1805,6 +4058,29 @@ def _resolve_import_asset_source(source: str, allowed_suffixes: set[str]) -> Pat
     if _is_url(source):
         return _download_import_url(source, allowed_suffixes)
     return _existing_local_file(source, allowed_suffixes)
+
+
+def _validate_image_texture_source(source: str) -> None:
+    if _is_url(source):
+        parsed = urlparse(source)
+        if parsed.scheme.lower() != "https":
+            raise ExecutionPreflightError("Image texture URLs must use HTTPS.")
+        if not parsed.netloc:
+            raise ExecutionPreflightError("Image texture URLs require a host name.")
+        suffix = Path(unquote(parsed.path)).suffix.lower()
+        if suffix not in IMAGE_TEXTURE_SUFFIXES:
+            suffixes = ", ".join(sorted(IMAGE_TEXTURE_SUFFIXES))
+            raise ExecutionPreflightError(
+                f"Image texture URL must end with one of: {suffixes}."
+            )
+        return
+    _existing_local_file(source, IMAGE_TEXTURE_SUFFIXES)
+
+
+def _resolve_image_texture_source(source: str, max_bytes: int) -> Path:
+    if _is_url(source):
+        return _download_image_texture_url(source, max_bytes)
+    return _existing_local_file(source, IMAGE_TEXTURE_SUFFIXES)
 
 
 def _is_url(source: str) -> bool:
@@ -1866,6 +4142,54 @@ def _download_import_url(source: str, allowed_suffixes: set[str]) -> Path:
         if bytes_written == 0:
             Path(temporary_path).unlink(missing_ok=True)
             raise ExecutionPreflightError("Asset URL returned an empty file.")
+        return Path(temporary_path)
+    finally:
+        response.close()
+
+
+def _download_image_texture_url(source: str, max_bytes: int) -> Path:
+    import requests
+
+    _validate_image_texture_source(source)
+    parsed = urlparse(source)
+    suffix = Path(unquote(parsed.path)).suffix.lower()
+    response = requests.get(
+        source,
+        stream=True,
+        timeout=URL_IMPORT_TIMEOUT_SECONDS,
+    )
+    try:
+        response.raise_for_status()
+        content_length = response.headers.get("content-length")
+        if content_length is not None and int(content_length) > max_bytes:
+            raise ExecutionPreflightError(
+                f"Image texture URL is larger than {max_bytes} bytes."
+            )
+
+        temporary_path = ""
+        bytes_written = 0
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix,
+            prefix="blender_ai_texture_",
+        ) as temporary:
+            temporary_path = temporary.name
+            try:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    bytes_written += len(chunk)
+                    if bytes_written > max_bytes:
+                        raise ExecutionPreflightError(
+                            f"Image texture URL is larger than {max_bytes} bytes."
+                        )
+                    temporary.write(chunk)
+            except Exception:
+                Path(temporary_path).unlink(missing_ok=True)
+                raise
+        if bytes_written == 0:
+            Path(temporary_path).unlink(missing_ok=True)
+            raise ExecutionPreflightError("Image texture URL returned an empty file.")
         return Path(temporary_path)
     finally:
         response.close()
@@ -2264,6 +4588,264 @@ def _restore_collections(item: Any, collections: tuple[Any, ...]) -> None:
             collection.objects.unlink(item)
 
 
+def _set_principled_optional_inputs(principled: Any, payload: Mapping[str, Any]) -> None:
+    optional_values = {
+        "Transmission Weight": payload.get("transmission"),
+        "Transmission": payload.get("transmission"),
+        "Emission Strength": payload.get("emission_strength"),
+    }
+    for input_name, value in optional_values.items():
+        socket = principled.inputs.get(input_name)
+        if socket is not None and value is not None:
+            socket.default_value = float(value)
+
+
+def _build_controlled_material_nodes(material: Any, payload: Mapping[str, Any]) -> None:
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("The new material has no Principled BSDF node.")
+    noise = node_tree.nodes.new("ShaderNodeTexNoise")
+    noise.label = "AI Procedural Detail"
+    noise.inputs["Scale"].default_value = float(payload["texture_scale"])
+    noise.inputs["Detail"].default_value = float(payload["detail_strength"]) * 16.0
+    if "Roughness" in noise.inputs:
+        noise.inputs["Roughness"].default_value = 0.55
+
+    bump = node_tree.nodes.new("ShaderNodeBump")
+    bump.label = "AI Controlled Bump"
+    bump.inputs["Strength"].default_value = float(payload["bump_strength"])
+    if "Distance" in bump.inputs:
+        bump.inputs["Distance"].default_value = 0.08
+
+    if payload.get("secondary_color") is not None:
+        ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+        ramp.label = "AI Color Blend"
+        base_color = tuple(float(value) for value in payload["base_color"])
+        secondary_color = tuple(float(value) for value in payload["secondary_color"])
+        ramp.color_ramp.elements[0].position = 0.25
+        ramp.color_ramp.elements[0].color = (*base_color, float(payload["alpha"]))
+        ramp.color_ramp.elements[1].position = 1.0
+        ramp.color_ramp.elements[1].color = (*secondary_color, float(payload["alpha"]))
+        node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+        node_tree.links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+
+    node_tree.links.new(noise.outputs["Fac"], bump.inputs["Height"])
+    node_tree.links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+
+
+def _socket_value(socket: Any) -> Any:
+    value = socket.default_value
+    try:
+        return tuple(float(component) for component in value)
+    except TypeError:
+        return value
+
+
+def _set_socket_value(socket: Any, value: Any) -> None:
+    if isinstance(value, tuple):
+        socket_value = tuple(float(component) for component in value)
+        current_value = _socket_value(socket)
+        if isinstance(current_value, tuple) and len(current_value) == 4 and len(socket_value) == 3:
+            socket_value = (*socket_value, 1.0)
+        socket.default_value = socket_value
+    elif isinstance(value, bool):
+        socket.default_value = value
+    else:
+        socket.default_value = float(value)
+
+
+def _restore_socket_value(socket: Any, value: Any) -> None:
+    socket.default_value = value
+
+
+def _remove_shader_node(node_tree: Any, node: Any) -> None:
+    if node_tree.nodes.get(node.name) == node:
+        node_tree.nodes.remove(node)
+
+
+def _remove_shader_link(node_tree: Any, link: Any) -> None:
+    try:
+        node_tree.links.remove(link)
+    except ReferenceError:
+        return
+
+
+def _is_assistant_created_node(node: Any) -> bool:
+    return bool(node.get("ai_assistant_created", False)) or str(node.label).startswith("AI ")
+
+
+def _find_shader_link(node_tree: Any, from_socket: Any, to_socket: Any) -> Any | None:
+    for link in node_tree.links:
+        if link.from_socket == from_socket and link.to_socket == to_socket:
+            return link
+    return None
+
+
+def _restore_shader_link(
+    node_tree: Any,
+    from_node: Any,
+    from_socket_name: str,
+    to_node: Any,
+    to_socket_name: str,
+) -> None:
+    from_socket = from_node.outputs.get(from_socket_name)
+    to_socket = to_node.inputs.get(to_socket_name)
+    if from_socket is not None and to_socket is not None:
+        node_tree.links.new(from_socket, to_socket)
+
+
+def _snapshot_shader_node(node: Any) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {
+            "bl_idname": node.bl_idname,
+            "name": node.name,
+            "label": node.label,
+            "location": tuple(float(value) for value in node.location),
+            "custom": dict(node.items()),
+        }
+    )
+
+
+def _restore_shader_node_snapshot(node_tree: Any, snapshot: Mapping[str, Any]) -> None:
+    node = node_tree.nodes.new(str(snapshot["bl_idname"]))
+    node.name = str(snapshot["name"])
+    node.label = str(snapshot["label"])
+    node.location = tuple(float(value) for value in snapshot["location"])
+    for key, value in cast(Mapping[str, Any], snapshot["custom"]).items():
+        node[key] = value
+
+
+def _color_ramp_stops(node: Any) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        MappingProxyType(
+            {
+                "position": float(element.position),
+                "color": tuple(float(value) for value in element.color),
+            }
+        )
+        for element in node.color_ramp.elements
+    )
+
+
+def _apply_color_ramp_stops(node: Any, stops: tuple[Mapping[str, Any], ...]) -> None:
+    elements = node.color_ramp.elements
+    while len(elements) > 2:
+        elements.remove(elements[-1])
+    while len(elements) < len(stops):
+        elements.new(float(stops[len(elements)]["position"]))
+    for element, stop in zip(elements, stops, strict=True):
+        element.position = float(stop["position"])
+        element.color = tuple(float(value) for value in stop["color"])
+
+
+def _build_shader_mix_chain(material: Any, payload: Mapping[str, Any]) -> tuple[Any, ...]:
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+    label = str(payload["chain_label"])
+    template = str(payload["template"])
+    created: list[Any] = []
+    try:
+        noise = node_tree.nodes.new("ShaderNodeTexNoise")
+        noise.name = f"{label} Noise"
+        noise.label = f"{label} Noise"
+        noise["ai_assistant_created"] = True
+        noise.inputs["Scale"].default_value = float(payload["scale"])
+        created.append(noise)
+        if template == "noise_bump":
+            bump = node_tree.nodes.new("ShaderNodeBump")
+            bump.name = f"{label} Bump"
+            bump.label = f"{label} Bump"
+            bump["ai_assistant_created"] = True
+            bump.inputs["Strength"].default_value = float(payload["strength"])
+            node_tree.links.new(noise.outputs["Fac"], bump.inputs["Height"])
+            node_tree.links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+            created.append(bump)
+        else:
+            ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+            ramp.name = f"{label} Ramp"
+            ramp.label = f"{label} Ramp"
+            ramp["ai_assistant_created"] = True
+            _apply_color_ramp_stops(
+                ramp,
+                (
+                    {"position": 0.0, "color": tuple(payload["base_color"])},
+                    {"position": 1.0, "color": tuple(payload["secondary_color"])},
+                ),
+            )
+            node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+            target_socket = (
+                principled.inputs["Emission Color"]
+                if template == "emission_overlay"
+                else principled.inputs["Base Color"]
+            )
+            node_tree.links.new(ramp.outputs["Color"], target_socket)
+            created.append(ramp)
+    except Exception:
+        for node in reversed(created):
+            _remove_shader_node(node_tree, node)
+        raise
+    return tuple(created)
+
+
+def _build_shader_graph_template(material: Any, payload: Mapping[str, Any]) -> tuple[Any, ...]:
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+    label = str(payload["graph_label"])
+    template = str(payload["template"])
+    created: list[Any] = []
+    try:
+        noise = node_tree.nodes.new("ShaderNodeTexNoise")
+        noise.name = f"{label} Noise"
+        noise.label = f"{label} Noise"
+        noise["ai_assistant_created"] = True
+        noise.inputs["Scale"].default_value = float(payload["scale"])
+        created.append(noise)
+
+        ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+        ramp.name = f"{label} Ramp"
+        ramp.label = f"{label} Ramp"
+        ramp["ai_assistant_created"] = True
+        _apply_color_ramp_stops(
+            ramp,
+            (
+                {"position": 0.0, "color": tuple(payload["base_color"])},
+                {"position": 1.0, "color": tuple(payload["secondary_color"])},
+            ),
+        )
+        node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+        node_tree.links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+        created.append(ramp)
+
+        if template in {"bump_detail_material", "layered_noise_material"}:
+            bump = node_tree.nodes.new("ShaderNodeBump")
+            bump.name = f"{label} Bump"
+            bump.label = f"{label} Bump"
+            bump["ai_assistant_created"] = True
+            bump.inputs["Strength"].default_value = float(payload["strength"])
+            node_tree.links.new(noise.outputs["Fac"], bump.inputs["Height"])
+            node_tree.links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+            created.append(bump)
+        if template == "emission_rim_material":
+            emission_color = principled.inputs.get("Emission Color")
+            emission_strength = principled.inputs.get("Emission Strength")
+            if emission_color is not None:
+                emission_color.default_value = tuple(
+                    float(value) for value in payload["secondary_color"]
+                )
+            if emission_strength is not None:
+                emission_strength.default_value = float(payload["strength"])
+    except Exception:
+        for node in reversed(created):
+            _remove_shader_node(node_tree, node)
+        raise
+    return tuple(created)
+
+
 def _principled_values(material: Any) -> Mapping[str, Any]:
     if not bool(getattr(material, "use_nodes", False)):
         return {}
@@ -2386,6 +4968,15 @@ def _contract_modifier_type(blender_modifier_type: str) -> str:
     }[blender_modifier_type]
 
 
+def _blender_texture_type(texture_pattern: str) -> str:
+    return {
+        "noise": "CLOUDS",
+        "clouds": "CLOUDS",
+        "voronoi": "VORONOI",
+        "wood": "WOOD",
+    }[texture_pattern]
+
+
 def _apply_modifier_properties(modifier: Any, payload: Mapping[str, Any]) -> None:
     modifier_type = str(
         payload.get("modifier_type", _contract_modifier_type(str(modifier.type)))
@@ -2454,6 +5045,20 @@ def _remove_modifier(item: Any, modifier_name: str) -> None:
         item.modifiers.remove(modifier)
 
 
+def _remove_displace_modifier(item: Any, modifier_name: str, texture: Any) -> None:
+    _remove_modifier(item, modifier_name)
+    _remove_created_texture(texture)
+
+
+def _remove_created_texture(texture: Any) -> None:
+    import bpy
+
+    textures: Any = cast(Any, bpy.data).textures
+    current = textures.get(texture.name)
+    if current == texture and texture.users == 0:
+        textures.remove(texture)
+
+
 def _restore_object_visibility(item: Any, values: tuple[bool, bool]) -> None:
     hide_viewport, hide_render = values
     item.hide_viewport = hide_viewport
@@ -2465,8 +5070,9 @@ def _remove_created_collection(collection: Any) -> None:
 
     current = cast(Any, bpy.data).collections.get(collection.name)
     if current == collection:
-        for parent in tuple(collection.users_scene):
-            parent.collection.children.unlink(collection)
+        for scene in tuple(cast(Any, bpy.data).scenes):
+            if collection.name in scene.collection.children:
+                scene.collection.children.unlink(collection)
         for parent in tuple(collection.users_collection):
             parent.children.unlink(collection)
         cast(Any, bpy.data).collections.remove(collection)
@@ -2492,11 +5098,1210 @@ def _remove_created_material(material: Any) -> None:
         materials.remove(material)
 
 
+def _remove_created_image(image: Any) -> None:
+    import bpy
+
+    images: Any = cast(Any, bpy.data).images
+    current = images.get(image.name)
+    if current == image and image.users == 0:
+        images.remove(image)
+
+
 def _remove_orphan_datablock(data: Any) -> None:
     import bpy
 
     if data.users == 0:
         bpy.data.batch_remove(ids=(data,))
+
+
+def _region_vertex_indices(
+    item: Any,
+    region: Mapping[str, Any],
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+) -> tuple[int, ...]:
+    kind = str(region["kind"])
+    mesh = item.data
+    if kind == "all":
+        return tuple(int(vertex.index) for vertex in mesh.vertices)
+    if kind == "material":
+        material = _runtime_target(str(region["material_id"]), prepared, results)
+        material_indices = {
+            index for index, slot_material in enumerate(mesh.materials) if slot_material == material
+        }
+        vertices = {
+            int(vertex_index)
+            for polygon in mesh.polygons
+            if int(polygon.material_index) in material_indices
+            for vertex_index in polygon.vertices
+        }
+        if not vertices:
+            raise ExecutionError(
+                f"Object {item.name!r} has no faces using material {material.name!r}."
+            )
+        return tuple(sorted(vertices))
+    if kind == "vertex_group":
+        group_name = str(region["vertex_group"])
+        group = item.vertex_groups.get(group_name)
+        if group is None:
+            raise ExecutionError(f"Object {item.name!r} has no vertex group {group_name!r}.")
+        vertices = {
+            int(vertex.index)
+            for vertex in mesh.vertices
+            for membership in vertex.groups
+            if int(membership.group) == int(group.index) and float(membership.weight) > 0.0
+        }
+        if not vertices:
+            raise ExecutionError(f"Vertex group {group_name!r} has no weighted vertices.")
+        return tuple(sorted(vertices))
+    raise ExecutionError(f"Unsupported sculpt region kind: {kind}.")
+
+
+def _mesh_vertex_positions(item: Any, vertex_indices: tuple[int, ...]) -> Mapping[int, Any]:
+    return MappingProxyType(
+        {index: item.data.vertices[index].co.copy() for index in vertex_indices}
+    )
+
+
+def _restore_mesh_vertices(item: Any, positions: Mapping[int, Any]) -> None:
+    for index, coordinate in positions.items():
+        item.data.vertices[index].co = coordinate
+    item.data.update()
+
+
+def _smooth_mesh_vertices(
+    item: Any,
+    vertex_indices: tuple[int, ...],
+    strength: float,
+    iterations: int,
+) -> None:
+    selected = set(vertex_indices)
+    adjacency = _mesh_adjacency(item)
+    vertices = item.data.vertices
+    for _iteration in range(iterations):
+        old_positions = {index: vertices[index].co.copy() for index in selected}
+        for index in selected:
+            neighbors = [neighbor for neighbor in adjacency[index] if neighbor in selected]
+            if not neighbors:
+                continue
+            average = sum(
+                (old_positions[neighbor] for neighbor in neighbors),
+                old_positions[index] * 0.0,
+            ) / len(neighbors)
+            vertices[index].co = old_positions[index] + (
+                average - old_positions[index]
+            ) * strength
+    item.data.update()
+
+
+def _mesh_adjacency(item: Any) -> dict[int, set[int]]:
+    adjacency: dict[int, set[int]] = {
+        int(vertex.index): set() for vertex in item.data.vertices
+    }
+    for edge in item.data.edges:
+        first, second = (int(index) for index in edge.vertices)
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+    return adjacency
+
+
+def _prepare_brush_strokes(
+    item: Any,
+    strokes: tuple[Mapping[str, Any], ...],
+    radius: float,
+) -> tuple[_PreparedBrushStroke, ...]:
+    adjacency = _mesh_adjacency(item)
+    return tuple(
+        _prepare_brush_stroke(item, stroke, radius, adjacency) for stroke in strokes
+    )
+
+
+def _prepare_brush_stroke(
+    item: Any,
+    stroke: Mapping[str, Any],
+    radius: float,
+    adjacency: Mapping[int, set[int]],
+) -> _PreparedBrushStroke:
+    normal = _normalized_vector(stroke["normal"])
+    location, affected_indices, snapped = _stroke_location_and_indices(
+        item,
+        stroke,
+        radius,
+        adjacency,
+    )
+    return _PreparedBrushStroke(
+        location,
+        normal,
+        float(stroke["pressure"]),
+        frozenset(affected_indices),
+        snapped,
+    )
+
+
+def _stroke_location_and_indices(
+    item: Any,
+    stroke: Mapping[str, Any],
+    radius: float,
+    adjacency: Mapping[int, set[int]],
+) -> tuple[Any, set[int], bool]:
+    candidates = _stroke_location_candidates(item, stroke)
+    best_location = candidates[0]
+    best_indices: set[int] = set()
+    for location in candidates:
+        indices = _vertices_within_radius(item, location, radius)
+        if len(indices) > len(best_indices):
+            best_location = location
+            best_indices = indices
+    if best_indices:
+        return best_location, best_indices, False
+
+    closest = _closest_vertex_to_candidates(item, candidates)
+    if closest is None:
+        return best_location, set(), False
+    closest_index = closest
+    snapped_indices = {closest_index, *adjacency.get(closest_index, set())}
+    snapped_location = item.data.vertices[closest_index].co.copy()
+    return snapped_location, snapped_indices, True
+
+
+def _stroke_location_candidates(
+    item: Any,
+    stroke: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    from mathutils import Vector
+
+    raw_location = Vector(tuple(float(value) for value in stroke["location"]))
+    candidates = [raw_location]
+    try:
+        world_as_local = item.matrix_world.inverted() @ raw_location
+    except Exception:
+        world_as_local = None
+    if world_as_local is not None and (world_as_local - raw_location).length > 1e-9:
+        candidates.append(world_as_local)
+    return tuple(candidates)
+
+
+def _vertices_within_radius(item: Any, location: Any, radius: float) -> set[int]:
+    return {
+        int(vertex.index)
+        for vertex in item.data.vertices
+        if (vertex.co - location).length <= radius
+    }
+
+
+def _closest_vertex_to_candidates(item: Any, candidates: tuple[Any, ...]) -> int | None:
+    closest_index: int | None = None
+    closest_distance: float | None = None
+    for location in candidates:
+        for vertex in item.data.vertices:
+            distance = float((vertex.co - location).length)
+            if closest_distance is None or distance < closest_distance:
+                closest_index = int(vertex.index)
+                closest_distance = distance
+    return closest_index
+
+
+def _prepared_brush_affected_vertices(
+    strokes: tuple[_PreparedBrushStroke, ...],
+) -> set[int]:
+    return {
+        vertex_index
+        for stroke in strokes
+        for vertex_index in stroke.affected_indices
+    }
+
+
+def _apply_brush_strokes(
+    item: Any,
+    strokes: tuple[_PreparedBrushStroke, ...],
+    brush_type: str,
+    radius: float,
+    strength: float,
+    falloff: str,
+) -> None:
+    adjacency = _mesh_adjacency(item)
+    vertices = item.data.vertices
+    for stroke in strokes:
+        old_positions = {
+            int(vertex.index): vertex.co.copy()
+            for vertex in vertices
+            if int(vertex.index) in stroke.affected_indices
+        }
+        for index, coordinate in old_positions.items():
+            distance = (coordinate - stroke.location).length
+            factor = strength * stroke.pressure * _brush_falloff(distance / radius, falloff)
+            if brush_type == "smooth":
+                neighbors = [neighbor for neighbor in adjacency[index] if neighbor in old_positions]
+                if neighbors:
+                    average = sum(
+                        (old_positions[neighbor] for neighbor in neighbors),
+                        coordinate * 0.0,
+                    ) / len(neighbors)
+                    vertices[index].co = coordinate + (average - coordinate) * factor
+            elif brush_type in {"inflate", "draw"}:
+                vertices[index].co = coordinate + stroke.normal * (factor * radius)
+            elif brush_type == "flatten":
+                plane_distance = (coordinate - stroke.location).dot(stroke.normal)
+                vertices[index].co = coordinate - stroke.normal * (plane_distance * factor)
+            else:
+                raise ExecutionError(f"Unsupported sculpt brush type: {brush_type}.")
+    item.data.update()
+
+
+def _brush_stroke_detail(strokes: tuple[_PreparedBrushStroke, ...]) -> str:
+    snapped_count = sum(1 for stroke in strokes if stroke.snapped_to_nearest)
+    if snapped_count:
+        return (
+            f"Applied {len(strokes)} sculpt brush strokes; "
+            f"{snapped_count} missed the radius and snapped to nearest vertices"
+        )
+    return f"Applied {len(strokes)} sculpt brush strokes"
+
+
+def _normalized_vector(values: Any) -> Any:
+    from mathutils import Vector
+
+    vector = Vector(tuple(float(value) for value in values))
+    if vector.length < 1e-9:
+        raise ExecutionError("Sculpt brush normal cannot be zero.")
+    vector.normalize()
+    return vector
+
+
+def _brush_falloff(distance_ratio: float, falloff: str) -> float:
+    clamped = max(0.0, min(1.0, distance_ratio))
+    if falloff == "sharp":
+        return 1.0 if clamped < 1.0 else 0.0
+    if falloff == "linear":
+        return 1.0 - clamped
+    if falloff == "smooth":
+        return (1.0 - clamped) ** 2 * (3.0 - 2.0 * (1.0 - clamped))
+    raise ExecutionError(f"Unsupported sculpt falloff: {falloff}.")
+
+
+def _create_geometry_nodes_preset(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _ensure_editable_mesh(item)
+        name = str(operation.payload["name"])
+        if item.modifiers.get(name) is not None:
+            raise ExecutionError(f"Object {item.name!r} already has a modifier named {name!r}.")
+        modifier = item.modifiers.new(name, "NODES")
+        modifier["ai_assistant_created"] = True
+        modifier["ai_geometry_nodes_preset"] = str(operation.payload["preset"])
+        for input_name, value in operation.payload["inputs"].items():
+            if value is not None:
+                modifier[f"ai_input_{input_name}"] = float(value)
+        transaction.add_rollback(partial(_remove_modifier, item, name))
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Added Geometry Nodes preset {operation.payload['preset']}",
+            )
+        )
+
+
+def _create_geometry_node_group_template(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _ensure_editable_mesh(item)
+        name = str(operation.payload["name"])
+        if item.modifiers.get(name) is not None:
+            raise ExecutionError(f"Object {item.name!r} already has a modifier named {name!r}.")
+        modifier = item.modifiers.new(name, "NODES")
+        group = None
+        try:
+            group = bpy.data.node_groups.new(f"{name} Group", "GeometryNodeTree")
+            _initialize_geometry_node_group_template(group)
+            if hasattr(modifier, "node_group"):
+                modifier.node_group = group
+        except Exception:
+            if group is not None:
+                with suppress(Exception):
+                    bpy.data.node_groups.remove(group)
+            raise
+        modifier["ai_assistant_created"] = True
+        modifier["ai_geometry_node_group_template"] = str(operation.payload["template"])
+        for input_name, value in operation.payload["inputs"].items():
+            if value is not None:
+                modifier[f"ai_input_{input_name}"] = float(value)
+        transaction.add_rollback(partial(_remove_node_groups, (group,)))
+        transaction.add_rollback(partial(_remove_modifier, item, name))
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Added Geometry Nodes group template {operation.payload['template']}",
+            )
+        )
+
+
+def _initialize_geometry_node_group_template(group: Any) -> None:
+    group.interface.new_socket(
+        name="Geometry",
+        in_out="INPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    group.interface.new_socket(
+        name="Geometry",
+        in_out="OUTPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    input_node = group.nodes.new("NodeGroupInput")
+    output_node = group.nodes.new("NodeGroupOutput")
+    input_node.location = (-200.0, 0.0)
+    output_node.location = (200.0, 0.0)
+    group.links.new(input_node.outputs["Geometry"], output_node.inputs["Geometry"])
+
+
+def _set_geometry_node_input(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    modifier = item.modifiers.get(str(operation.payload["modifier_name"]))
+    if modifier is None:
+        raise ExecutionError(f"Object {item.name!r} has no requested Geometry Nodes modifier.")
+    if not bool(modifier.get("ai_assistant_created", False)):
+        raise ExecutionError("Only assistant-created Geometry Nodes modifiers can be edited.")
+    key = f"ai_input_{operation.payload['input_name']}"
+    old_value = modifier.get(key)
+    modifier[key] = float(operation.payload["value"])
+    transaction.add_rollback(partial(_restore_custom_property, modifier, key, old_value))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Set Geometry Nodes input {operation.payload['input_name']}",
+        )
+    )
+
+
+def _remove_geometry_nodes_modifier(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    modifier = item.modifiers.get(str(operation.payload["modifier_name"]))
+    if modifier is None:
+        raise ExecutionError(f"Object {item.name!r} has no requested Geometry Nodes modifier.")
+    if not bool(modifier.get("ai_assistant_created", False)):
+        raise ExecutionError("Only assistant-created Geometry Nodes modifiers can be removed.")
+    values = dict(modifier.items())
+    name = modifier.name
+    item.modifiers.remove(modifier)
+    transaction.add_rollback(partial(_restore_geometry_nodes_modifier, item, name, values))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Removed Geometry Nodes modifier {name}",
+        )
+    )
+
+
+def _create_generated_geometry_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    copy["ai_generated_variant"] = str(operation.payload["variant"])
+    _register_created_object(operation, copy, results, transaction, "Created generated mesh copy")
+
+
+def _create_smoothed_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    vertices = tuple(int(vertex.index) for vertex in copy.data.vertices)
+    _smooth_mesh_vertices(
+        copy,
+        vertices,
+        float(operation.payload["strength"]),
+        int(operation.payload["iterations"]),
+    )
+    copy["ai_generated_variant"] = "smoothed"
+    _register_created_object(operation, copy, results, transaction, "Created smoothed mesh copy")
+
+
+def _create_displaced_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    direction = _normalized_vector(operation.payload["direction"])
+    strength = float(operation.payload["strength"])
+    for vertex in copy.data.vertices:
+        vertex.co = vertex.co + direction * strength
+    copy.data.update()
+    copy["ai_generated_variant"] = "displaced"
+    _register_created_object(operation, copy, results, transaction, "Created displaced mesh copy")
+
+
+def _create_remeshed_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    if operation.payload["mode"] == "triangulate":
+        import bmesh
+
+        mesh = copy.data
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+    copy["ai_generated_variant"] = "remeshed"
+    _register_created_object(operation, copy, results, transaction, "Created remeshed mesh copy")
+
+
+def _create_dynamic_topology_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bmesh
+
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    mesh = copy.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    cuts = int(operation.payload["detail_level"]) - 1
+    if cuts > 0:
+        bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=True)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    _ensure_mesh_size_within_limits(copy)
+    copy["ai_generated_variant"] = "dynamic_topology"
+    _register_created_object(
+        operation,
+        copy,
+        results,
+        transaction,
+        "Created dynamic-topology-style mesh copy",
+    )
+
+
+def _replace_object_with_generated_copy(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    original = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    generated = _runtime_target(str(operation.payload["generated_object_id"]), prepared, results)
+    _ensure_editable_mesh(original)
+    _ensure_editable_mesh(generated)
+    old_original_hidden = (bool(original.hide_viewport), bool(original.hide_render))
+    old_generated_hidden = (bool(generated.hide_viewport), bool(generated.hide_render))
+    original.hide_viewport = bool(operation.payload["hide_original"])
+    original.hide_render = bool(operation.payload["hide_original"])
+    generated.hide_viewport = False
+    generated.hide_render = False
+    transaction.add_rollback(
+        partial(
+            _restore_replacement_visibility,
+            original,
+            generated,
+            old_original_hidden,
+            old_generated_hidden,
+        )
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            generated,
+            "object",
+            ChangeKind.UPDATED,
+            f"Activated generated copy for {original.name}",
+        )
+    )
+
+
+def _apply_generated_mesh_to_object(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    original = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    generated = _runtime_target(str(operation.payload["generated_object_id"]), prepared, results)
+    _ensure_editable_mesh(original)
+    _ensure_editable_mesh(generated)
+    old_data = original.data
+    new_data = generated.data.copy()
+    generated_visibility = (bool(generated.hide_viewport), bool(generated.hide_render))
+    original.data = new_data
+    generated.hide_viewport = bool(operation.payload["hide_generated"])
+    generated.hide_render = bool(operation.payload["hide_generated"])
+    transaction.add_rollback(partial(_restore_copied_data, original, old_data, new_data))
+    transaction.add_rollback(
+        partial(_restore_object_visibility, generated, generated_visibility)
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            original,
+            "object",
+            ChangeKind.UPDATED,
+            f"Applied generated mesh data from {generated.name}",
+        )
+    )
+
+
+def _create_sculpt_region_from_material(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    region = {
+        "kind": "material",
+        "material_id": str(operation.payload["material_id"]),
+        "vertex_group": None,
+    }
+    indices = _region_vertex_indices(item, region, prepared, results)
+    _store_sculpt_region(operation, results, transaction, item, material.name, indices)
+
+
+def _create_sculpt_region_from_vertex_group(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    region = {
+        "kind": "vertex_group",
+        "material_id": None,
+        "vertex_group": str(operation.payload["vertex_group"]),
+    }
+    indices = _region_vertex_indices(item, region, prepared, results)
+    _store_sculpt_region(
+        operation,
+        results,
+        transaction,
+        item,
+        str(operation.payload["vertex_group"]),
+        indices,
+    )
+
+
+def _create_sculpt_mask(
+    operation: Operation,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    region = _runtime_sculpt_region(str(operation.payload["region_id"]), results)
+    group = region.target.vertex_groups.new(name=str(operation.payload["mask_name"]))
+    group.add(region.vertex_indices, float(operation.payload["strength"]), "REPLACE")
+    transaction.add_rollback(partial(_remove_vertex_group, region.target, group.name))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    cast(dict[str, Any], results)[reference] = group
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            region.target,
+            "object",
+            ChangeKind.UPDATED,
+            f"Created sculpt mask {group.name}",
+        )
+    )
+
+
+def _create_face_set_from_material(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    indices = _face_indices_from_material(item, material)
+    _create_face_set_attribute(
+        operation,
+        results,
+        transaction,
+        item,
+        str(operation.payload["face_set_name"]),
+        indices,
+    )
+
+
+def _create_face_set_from_vertex_group(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    indices = _face_indices_from_vertex_group(item, str(operation.payload["vertex_group"]))
+    _create_face_set_attribute(
+        operation,
+        results,
+        transaction,
+        item,
+        str(operation.payload["face_set_name"]),
+        indices,
+    )
+
+
+def _apply_sculpt_region_operation(
+    operation: Operation,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    region = _runtime_sculpt_region(str(operation.payload["region_id"]), results)
+    positions = _mesh_vertex_positions(region.target, region.vertex_indices)
+    transaction.add_rollback(partial(_restore_mesh_vertices, region.target, positions))
+    operation_name = str(operation.payload["operation"])
+    if operation_name == "smooth":
+        _smooth_mesh_vertices(
+            region.target,
+            region.vertex_indices,
+            float(operation.payload["strength"]),
+            int(operation.payload["iterations"]),
+        )
+    else:
+        normal = _average_vertex_normal(region.target, region.vertex_indices)
+        strokes = (
+            _PreparedBrushStroke(
+                region.target.data.vertices[index].co.copy(),
+                normal,
+                1.0,
+                frozenset({index}),
+            )
+            for index in region.vertex_indices
+        )
+        _apply_brush_strokes(
+            region.target,
+            tuple(strokes),
+            "inflate" if operation_name == "inflate" else "flatten",
+            1.0,
+            float(operation.payload["strength"]),
+            "smooth",
+        )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            region.target,
+            "object",
+            ChangeKind.UPDATED,
+            f"Applied sculpt region operation {operation_name}",
+        )
+    )
+
+
+def _add_multires_modifier(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _ensure_editable_mesh(item)
+        name = str(operation.payload["name"])
+        modifier = item.modifiers.new(name, "MULTIRES")
+        modifier.levels = int(operation.payload["levels"])
+        modifier.render_levels = int(operation.payload["render_levels"])
+        transaction.add_rollback(partial(_remove_modifier, item, name))
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Added Multires modifier {name}",
+            )
+        )
+
+
+def _create_shape_key(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    if item.data.shape_keys is None:
+        item.shape_key_add(name="Basis")
+    key = item.shape_key_add(name=str(operation.payload["name"]))
+    key.value = float(operation.payload["value"])
+    source_id = operation.payload["from_generated_object_id"]
+    if source_id is not None:
+        source = _runtime_target(str(source_id), prepared, results)
+        _ensure_editable_mesh(source)
+        if len(source.data.vertices) != len(item.data.vertices):
+            raise ExecutionError("Shape key source must have the same vertex count.")
+        for index, vertex in enumerate(source.data.vertices):
+            key.data[index].co = vertex.co
+    transaction.add_rollback(partial(_remove_shape_key, item, key.name))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Created shape key {key.name}",
+        )
+    )
+
+
+def _create_rig_safe_shape_key(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    if _object_has_rig_dependency(item) and not bool(operation.payload["allow_rigged"]):
+        raise ExecutionError("Rigged objects require allow_rigged for shape key creation.")
+    if item.animation_data is not None and not bool(operation.payload["preserve_animation"]):
+        raise ExecutionError("Animated objects require preserve_animation for shape key creation.")
+    _create_shape_key(operation, prepared, results, transaction)
+
+
+def _set_shape_key_value(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    shape_keys = item.data.shape_keys
+    if shape_keys is None:
+        raise ExecutionError(f"Object {item.name!r} has no shape keys.")
+    key = shape_keys.key_blocks.get(str(operation.payload["shape_key_name"]))
+    if key is None:
+        raise ExecutionError(
+            f"Object {item.name!r} has no shape key {operation.payload['shape_key_name']!r}."
+        )
+    old_value = float(key.value)
+    key.value = float(operation.payload["value"])
+    transaction.add_rollback(partial(_set_shape_key_block_value, key, old_value))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Set shape key {key.name} value",
+        )
+    )
+
+
+def _create_preview_image(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    if operation.payload["target_id"] is not None:
+        _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    if operation.payload["material_id"] is not None:
+        _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    image = _new_filled_image(
+        str(operation.payload["preview_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        (0.08, 0.08, 0.08, 1.0),
+        "sRGB",
+        pack=False,
+    )
+    try:
+        _write_generated_pattern(
+            image,
+            str(operation.payload["preview_kind"]),
+            "gradient",
+            (0.08, 0.08, 0.08, 1.0),
+            (0.2, 0.45, 0.85, 1.0),
+        )
+        image["ai_preview_kind"] = str(operation.payload["preview_kind"])
+        image.pack()
+    except Exception:
+        _remove_created_image(image)
+        raise
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            f"Created {operation.payload['preview_kind']} preview image",
+        )
+    )
+
+
+def _create_render_preview_image(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    scene = context.scene
+    if operation.payload["target_id"] is not None:
+        _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    camera = (
+        _runtime_target(str(operation.payload["camera_id"]), prepared, results)
+        if operation.payload["camera_id"] is not None
+        else scene.camera
+    )
+    if camera is None:
+        raise ExecutionError("CREATE_RENDER_PREVIEW_IMAGE requires a camera.")
+    old_values = (
+        scene.camera,
+        int(scene.render.resolution_x),
+        int(scene.render.resolution_y),
+        int(scene.render.resolution_percentage),
+        str(scene.render.filepath),
+    )
+    path = Path(tempfile.gettempdir()) / "blender_ai_assistant" / f"{uuid.uuid4().hex}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scene.camera = camera
+    scene.render.resolution_x = int(operation.payload["width"])
+    scene.render.resolution_y = int(operation.payload["height"])
+    scene.render.resolution_percentage = 100
+    scene.render.filepath = str(path)
+    try:
+        bpy.ops.render.render(write_still=True)
+        image = cast(Any, bpy.data).images.load(str(path), check_existing=False)
+        image.name = str(operation.payload["preview_name"])
+        image["ai_preview_kind"] = "render"
+        image["ai_render_preview_mode"] = str(operation.payload["mode"])
+        if bool(operation.payload["pack"]):
+            image.pack()
+    except Exception:
+        _restore_render_settings(scene, old_values)
+        raise
+    finally:
+        path.unlink(missing_ok=True)
+    _restore_render_settings(scene, old_values)
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Created render preview image",
+        )
+    )
+
+
+def _ensure_editable_mesh(item: Any) -> None:
+    if getattr(item, "library", None) is not None:
+        raise ExecutionError(f"Linked object {item.name!r} cannot be modified.")
+    if getattr(item, "type", "") != "MESH":
+        raise ExecutionError(f"Object {item.name!r} is not a mesh.")
+    _ensure_mesh_size_within_limits(item)
+
+
+def _ensure_mesh_size_within_limits(item: Any) -> None:
+    mesh = item.data
+    if len(mesh.vertices) > MESH_PROCESSING_LIMITS["generated_mesh_max_vertices"]:
+        raise ExecutionError(f"Object {item.name!r} exceeds generated mesh vertex limits.")
+    if len(mesh.polygons) > MESH_PROCESSING_LIMITS["generated_mesh_max_polygons"]:
+        raise ExecutionError(f"Object {item.name!r} exceeds generated mesh polygon limits.")
+
+
+def _copy_mesh_object(context: Any, item: Any, name: str) -> Any:
+    import bpy
+
+    _ensure_editable_mesh(item)
+    if cast(Any, bpy.data).objects.get(name) is not None:
+        raise ExecutionError(f"An object named {name!r} already exists.")
+    mesh = item.data.copy()
+    copy = item.copy()
+    copy.name = name
+    copy.data = mesh
+    copy.animation_data_clear()
+    for collection in tuple(item.users_collection) or (_default_collection(context),):
+        collection.objects.link(copy)
+    copy.matrix_world = item.matrix_world.copy()
+    return copy
+
+
+def _register_created_object(
+    operation: Operation,
+    item: Any,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    detail: str,
+) -> None:
+    transaction.add_rollback(partial(_remove_created_object, item, item.data))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = item
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "object",
+            item.name,
+            ChangeKind.CREATED,
+            detail,
+        )
+    )
+
+
+def _restore_custom_property(item: Any, key: str, old_value: Any) -> None:
+    if old_value is None:
+        with suppress(Exception):
+            del item[key]
+    else:
+        item[key] = old_value
+
+
+def _restore_geometry_nodes_modifier(
+    item: Any,
+    name: str,
+    values: Mapping[str, Any],
+) -> None:
+    modifier = item.modifiers.new(name, "NODES")
+    for key, value in values.items():
+        modifier[key] = value
+
+
+def _restore_replacement_visibility(
+    original: Any,
+    generated: Any,
+    original_values: tuple[bool, bool],
+    generated_values: tuple[bool, bool],
+) -> None:
+    original.hide_viewport, original.hide_render = original_values
+    generated.hide_viewport, generated.hide_render = generated_values
+
+
+def _store_sculpt_region(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    item: Any,
+    source_name: str,
+    indices: tuple[int, ...],
+) -> None:
+    if not indices:
+        raise ExecutionError("Sculpt region cannot be empty.")
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = _SculptRegion(
+        str(operation.payload["region_name"]),
+        item,
+        tuple(indices),
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "sculpt_region",
+            str(operation.payload["region_name"]),
+            ChangeKind.CREATED,
+            f"Created sculpt region from {source_name}",
+        )
+    )
+
+
+def _runtime_sculpt_region(region_id: str, results: Mapping[str, Any]) -> _SculptRegion:
+    if not region_id.startswith(RESULT_REFERENCE_PREFIX):
+        raise ExecutionError("Sculpt region references must use result:<operation_id>.")
+    region = results.get(region_id)
+    if not isinstance(region, _SculptRegion):
+        raise ExecutionError(f"Sculpt region result {region_id} is unavailable.")
+    return region
+
+
+def _remove_vertex_group(item: Any, group_name: str) -> None:
+    group = item.vertex_groups.get(group_name)
+    if group is not None:
+        item.vertex_groups.remove(group)
+
+
+def _average_vertex_normal(item: Any, vertex_indices: tuple[int, ...]) -> Any:
+    from mathutils import Vector
+
+    normal = Vector((0.0, 0.0, 0.0))
+    for index in vertex_indices:
+        normal += item.data.vertices[index].normal
+    if normal.length < 1e-9:
+        return Vector((0.0, 0.0, 1.0))
+    normal.normalize()
+    return normal
+
+
+def _remove_shape_key(item: Any, key_name: str) -> None:
+    key = item.data.shape_keys.key_blocks.get(key_name) if item.data.shape_keys else None
+    if key is not None:
+        item.shape_key_remove(key)
+
+
+def _set_shape_key_block_value(key: Any, value: float) -> None:
+    key.value = value
+
+
+def _object_has_rig_dependency(item: Any) -> bool:
+    if getattr(getattr(item, "parent", None), "type", "") == "ARMATURE":
+        return True
+    return any(str(modifier.type) == "ARMATURE" for modifier in item.modifiers)
+
+
+def _remove_node_groups(groups: tuple[Any, ...]) -> None:
+    import bpy
+
+    node_groups: Any = cast(Any, bpy.data).node_groups
+    for group in groups:
+        current = node_groups.get(group.name)
+        if current == group:
+            node_groups.remove(group)
+
+
+def _face_indices_from_material(item: Any, material: Any) -> tuple[int, ...]:
+    _ensure_editable_mesh(item)
+    material_indices = {
+        index
+        for index, slot_material in enumerate(item.data.materials)
+        if slot_material == material
+    }
+    indices = tuple(
+        int(polygon.index)
+        for polygon in item.data.polygons
+        if int(polygon.material_index) in material_indices
+    )
+    if not indices:
+        raise ExecutionError(
+            f"Object {item.name!r} has no faces using material {material.name!r}."
+        )
+    return indices
+
+
+def _face_indices_from_vertex_group(item: Any, group_name: str) -> tuple[int, ...]:
+    _ensure_editable_mesh(item)
+    group = item.vertex_groups.get(group_name)
+    if group is None:
+        raise ExecutionError(f"Object {item.name!r} has no vertex group {group_name!r}.")
+    weighted_vertices = {
+        int(vertex.index)
+        for vertex in item.data.vertices
+        for membership in vertex.groups
+        if int(membership.group) == int(group.index) and float(membership.weight) > 0.0
+    }
+    indices = tuple(
+        int(polygon.index)
+        for polygon in item.data.polygons
+        if any(int(vertex_index) in weighted_vertices for vertex_index in polygon.vertices)
+    )
+    if not indices:
+        raise ExecutionError(f"Vertex group {group_name!r} does not cover any faces.")
+    return indices
+
+
+def _create_face_set_attribute(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    item: Any,
+    name: str,
+    face_indices: tuple[int, ...],
+) -> None:
+    attributes = item.data.attributes
+    if attributes.get(name) is not None:
+        raise ExecutionError(f"Object {item.name!r} already has a face set {name!r}.")
+    attribute = attributes.new(name=name, type="INT", domain="FACE")
+    face_set = set(face_indices)
+    for index, value in enumerate(attribute.data):
+        value.value = 1 if index in face_set else 0
+    transaction.add_rollback(partial(_remove_mesh_attribute, item, name))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = attribute
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "face_set",
+            name,
+            ChangeKind.CREATED,
+            f"Created face set with {len(face_indices)} faces",
+        )
+    )
+
+
+def _remove_mesh_attribute(item: Any, name: str) -> None:
+    attribute = item.data.attributes.get(name)
+    if attribute is not None:
+        item.data.attributes.remove(attribute)
+
+
+def _restore_render_settings(scene: Any, values: tuple[Any, int, int, int, str]) -> None:
+    camera, resolution_x, resolution_y, resolution_percentage, filepath = values
+    scene.camera = camera
+    scene.render.resolution_x = resolution_x
+    scene.render.resolution_y = resolution_y
+    scene.render.resolution_percentage = resolution_percentage
+    scene.render.filepath = filepath
 
 
 def _build_torus(mesh: Any) -> None:

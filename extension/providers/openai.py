@@ -4,10 +4,19 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-import fastjsonschema
 import requests
 
 from ..config import resolve_environment_value
+from ._shared import (
+    TransportErrorMessages,
+    non_negative_int,
+    parse_and_validate_plan,
+    post_with_transient_retries,
+    raise_http_api_error,
+    read_json_mapping_or_raise_http_error,
+    request_id_from_headers,
+    retry_delay,
+)
 from .base import PlanRequest, PlanResponse, TokenUsage
 from .instructions import SYSTEM_INSTRUCTIONS
 
@@ -40,7 +49,26 @@ DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_MAX_OUTPUT_TOKENS = 4_096
 DEFAULT_MAX_TRANSIENT_RETRIES = 2
-TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+OPENAI_API_NAME = "OpenAI API"
+OPENAI_TRANSPORT_MESSAGES = TransportErrorMessages(
+    timeout=(
+        "OpenAI did not respond within {timeout_seconds:g} seconds. Increase Request Timeout in "
+        "the extension preferences or use a faster model."
+    ),
+    tls=(
+        "A secure TLS connection to OpenAI could not be established. Check the system clock, "
+        "certificate store, proxy, and firewall settings."
+    ),
+    connection=(
+        "Could not connect to OpenAI. Confirm Blender network access and check the internet "
+        "connection, proxy, firewall, and DNS settings."
+    ),
+    transport=(
+        "The OpenAI request failed before receiving a response. Check Blender network access and "
+        "the extension's connection settings."
+    ),
+)
+
 
 class OpenAIProviderError(RuntimeError):
     """Base error for OpenAI provider failures."""
@@ -145,30 +173,23 @@ class OpenAIProvider:
         payload = self.build_payload(request)
         response = self._post_with_transient_retries(payload)
         request_id = self._request_id(response)
-
-        try:
-            data = self._read_json_response(response)
-        except OpenAIResponseError as error:
-            if response.status_code >= 400:
-                suffix = f" Request ID: {request_id}." if request_id else ""
-                raise OpenAIAPIError(
-                    f"OpenAI API returned HTTP {response.status_code} with a non-JSON error."
-                    f"{suffix}",
-                    status_code=response.status_code,
-                    request_id=request_id,
-                    retryable=response.status_code in TRANSIENT_STATUS_CODES,
-                ) from error
-            raise
+        data = read_json_mapping_or_raise_http_error(
+            response,
+            request_id=request_id,
+            response_error_type=OpenAIResponseError,
+            api_error_type=OpenAIAPIError,
+            api_name=OPENAI_API_NAME,
+            non_json_message="OpenAI returned a non-JSON response.",
+            unexpected_json_message="OpenAI returned an unexpected JSON response.",
+        )
 
         if response.status_code >= 400:
-            message, error_code = self._extract_api_error(data)
-            suffix = f" Request ID: {request_id}." if request_id else ""
-            raise OpenAIAPIError(
-                f"OpenAI API returned HTTP {response.status_code}: {message}{suffix}",
-                status_code=response.status_code,
+            raise_http_api_error(
+                response,
+                data,
                 request_id=request_id,
-                error_code=error_code,
-                retryable=response.status_code in TRANSIENT_STATUS_CODES,
+                api_error_type=OpenAIAPIError,
+                api_name=OPENAI_API_NAME,
             )
 
         self._validate_response_status(data)
@@ -217,29 +238,6 @@ class OpenAIProvider:
         }
 
     @staticmethod
-    def _read_json_response(response: Any) -> Mapping[str, Any]:
-        try:
-            data = response.json()
-        except (TypeError, ValueError) as exc:
-            raise OpenAIResponseError("OpenAI returned a non-JSON response.") from exc
-
-        if not isinstance(data, Mapping):
-            raise OpenAIResponseError("OpenAI returned an unexpected JSON response.")
-        return data
-
-    @staticmethod
-    def _extract_api_error(data: Mapping[str, Any]) -> tuple[str, str]:
-        error = data.get("error")
-        if isinstance(error, Mapping):
-            message = error.get("message")
-            code = error.get("code")
-            return (
-                message if isinstance(message, str) and message else "Request failed.",
-                code if isinstance(code, str) else "",
-            )
-        return "Request failed.", ""
-
-    @staticmethod
     def _validate_response_status(data: Mapping[str, Any]) -> None:
         status = data.get("status")
         if status == "completed":
@@ -257,70 +255,28 @@ class OpenAIProvider:
         raise OpenAIResponseError(f"OpenAI returned unexpected response status: {status}.")
 
     def _post_with_transient_retries(self, payload: Mapping[str, Any]) -> Any:
-        attempt = 0
-        while True:
-            try:
-                response = self._session.post(
-                    RESPONSES_API_URL,
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=self._timeout_seconds,
-                )
-            except requests.exceptions.Timeout as exc:
-                raise OpenAIAPIError(
-                    "OpenAI did not respond within "
-                    f"{self._timeout_seconds:g} seconds. Increase Request Timeout in the "
-                    "extension preferences or use a faster model.",
-                    error_code="request_timeout",
-                ) from exc
-            except requests.exceptions.SSLError as exc:
-                raise OpenAIAPIError(
-                    "A secure TLS connection to OpenAI could not be established. Check the "
-                    "system clock, certificate store, proxy, and firewall settings.",
-                    error_code="tls_error",
-                ) from exc
-            except requests.exceptions.ConnectionError as exc:
-                raise OpenAIAPIError(
-                    "Could not connect to OpenAI. Confirm Blender network access and check the "
-                    "internet connection, proxy, firewall, and DNS settings.",
-                    error_code="connection_error",
-                ) from exc
-            except requests.exceptions.RequestException as exc:
-                raise OpenAIAPIError(
-                    "The OpenAI request failed before receiving a response. Check Blender "
-                    "network access and the extension's connection settings.",
-                    error_code="transport_error",
-                ) from exc
-
-            if (
-                response.status_code not in TRANSIENT_STATUS_CODES
-                or attempt >= self._max_transient_retries
-            ):
-                return response
-            self._sleep(self._retry_delay(response, attempt))
-            attempt += 1
+        return post_with_transient_retries(
+            session=self._session,
+            url=RESPONSES_API_URL,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout_seconds=self._timeout_seconds,
+            max_transient_retries=self._max_transient_retries,
+            sleep=self._sleep,
+            random_source=self._random_source,
+            api_error_type=OpenAIAPIError,
+            messages=OPENAI_TRANSPORT_MESSAGES,
+        )
 
     def _retry_delay(self, response: Any, attempt: int) -> float:
-        headers = getattr(response, "headers", {})
-        retry_after = headers.get("Retry-After") if isinstance(headers, Mapping) else None
-        if isinstance(retry_after, str):
-            try:
-                return min(30.0, max(0.0, float(retry_after)))
-            except ValueError:
-                pass
-        base_delay = min(5.0, 0.25 * (2**attempt))
-        return base_delay + (self._random_source() * 0.1)
+        return retry_delay(response, attempt, self._random_source)
 
     @staticmethod
     def _request_id(response: Any) -> str:
-        headers = getattr(response, "headers", {})
-        if not isinstance(headers, Mapping):
-            return ""
-        request_id = headers.get("x-request-id") or headers.get("X-Request-Id")
-        return request_id if isinstance(request_id, str) else ""
+        return request_id_from_headers(response, ("x-request-id", "X-Request-Id"))
 
     @classmethod
     def _extract_token_usage(cls, data: Mapping[str, Any]) -> TokenUsage:
@@ -328,23 +284,23 @@ class OpenAIProvider:
         if not isinstance(usage, Mapping):
             return TokenUsage()
 
-        input_tokens = cls._non_negative_int(usage.get("input_tokens"))
-        output_tokens = cls._non_negative_int(usage.get("output_tokens"))
+        input_tokens = non_negative_int(usage.get("input_tokens"))
+        output_tokens = non_negative_int(usage.get("output_tokens"))
         input_details = usage.get("input_tokens_details")
         output_details = usage.get("output_tokens_details")
         cached_input_tokens = (
-            cls._non_negative_int(input_details.get("cached_tokens"))
+            non_negative_int(input_details.get("cached_tokens"))
             if isinstance(input_details, Mapping)
             else 0
         )
         reasoning_tokens = (
-            cls._non_negative_int(output_details.get("reasoning_tokens"))
+            non_negative_int(output_details.get("reasoning_tokens"))
             if isinstance(output_details, Mapping)
             else 0
         )
         total_tokens_value = usage.get("total_tokens")
         total_tokens = (
-            cls._non_negative_int(total_tokens_value)
+            non_negative_int(total_tokens_value)
             if isinstance(total_tokens_value, int) and not isinstance(total_tokens_value, bool)
             else input_tokens + output_tokens
         )
@@ -356,12 +312,6 @@ class OpenAIProvider:
             total_tokens=total_tokens,
         )
 
-    @staticmethod
-    def _non_negative_int(value: Any) -> int:
-        if isinstance(value, int) and not isinstance(value, bool):
-            return max(0, value)
-        return 0
-
     @classmethod
     def _extract_and_validate_plan(
         cls,
@@ -369,22 +319,16 @@ class OpenAIProvider:
         response_schema: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         output_text = cls._extract_output_text(data)
-
-        try:
-            plan = json.loads(output_text)
-        except json.JSONDecodeError as exc:
-            raise OpenAIResponseError("OpenAI returned invalid plan JSON.") from exc
-
-        if not isinstance(plan, Mapping):
-            raise OpenAIResponseError("OpenAI returned a plan that is not an object.")
-
-        try:
-            fastjsonschema.compile(dict(response_schema))(plan)
-        except fastjsonschema.JsonSchemaException as exc:
-            message = "OpenAI returned a plan that failed local validation."
-            raise OpenAIResponseError(message) from exc
-
-        return plan
+        return parse_and_validate_plan(
+            output_text,
+            response_schema,
+            response_error_type=OpenAIResponseError,
+            invalid_json_message="OpenAI returned invalid plan JSON.",
+            not_object_message="OpenAI returned a plan that is not an object.",
+            validation_message=lambda _error: (
+                "OpenAI returned a plan that failed local validation."
+            ),
+        )
 
     @staticmethod
     def _extract_output_text(data: Mapping[str, Any]) -> str:

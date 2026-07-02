@@ -5,10 +5,19 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-import fastjsonschema
 import requests
 
 from ..config import resolve_environment_value
+from ._shared import (
+    TransportErrorMessages,
+    non_negative_int,
+    parse_and_validate_plan,
+    post_with_transient_retries,
+    raise_http_api_error,
+    read_json_mapping_or_raise_http_error,
+    request_id_from_headers,
+    retry_delay,
+)
 from .base import PlanRequest, PlanResponse, TokenUsage
 from .instructions import SYSTEM_INSTRUCTIONS
 
@@ -38,8 +47,26 @@ DEFAULT_NVIDIA_TIMEOUT_SECONDS = 180.0
 DEFAULT_NVIDIA_MAX_OUTPUT_TOKENS = 4_096
 DEFAULT_NVIDIA_MAX_TRANSIENT_RETRIES = 2
 MAX_REPAIR_OUTPUT_CHARACTERS = 12_000
-TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 CUSTOM_MODEL_OPTION = "CUSTOM"
+NVIDIA_API_NAME = "NVIDIA NIM API"
+NVIDIA_TRANSPORT_MESSAGES = TransportErrorMessages(
+    timeout=(
+        "NVIDIA NIM did not respond within {timeout_seconds:g} seconds. Increase Request Timeout "
+        "in the extension preferences or use a faster model."
+    ),
+    tls=(
+        "A secure TLS connection to NVIDIA NIM could not be established. Check the system clock, "
+        "certificate store, proxy, and firewall settings."
+    ),
+    connection=(
+        "Could not connect to NVIDIA NIM. Confirm Blender network access and check the internet "
+        "connection, proxy, firewall, DNS settings, and base URL."
+    ),
+    transport=(
+        "The NVIDIA NIM request failed before receiving a response. Check Blender network access "
+        "and the extension's connection settings."
+    ),
+)
 NVIDIA_PLAN_FORMAT_REMINDER = """NVIDIA planning format reminder:
 Return one JSON object with these exact top-level keys: snapshot_id, status, intent_summary,
 assumptions, questions, operations. Use status "ready" when operations are complete or
@@ -158,30 +185,24 @@ class NvidiaProvider:
         payload = self.build_payload(request)
         response = self._post_with_transient_retries(payload)
         request_id = self._request_id(response)
-
-        try:
-            data = self._read_json_response(response)
-        except NvidiaResponseError as error:
-            if response.status_code >= 400:
-                suffix = f" Request ID: {request_id}." if request_id else ""
-                raise NvidiaAPIError(
-                    "NVIDIA NIM API returned HTTP "
-                    f"{response.status_code} with a non-JSON error.{suffix}",
-                    status_code=response.status_code,
-                    request_id=request_id,
-                    retryable=response.status_code in TRANSIENT_STATUS_CODES,
-                ) from error
-            raise
+        data = read_json_mapping_or_raise_http_error(
+            response,
+            request_id=request_id,
+            response_error_type=NvidiaResponseError,
+            api_error_type=NvidiaAPIError,
+            api_name=NVIDIA_API_NAME,
+            non_json_message="NVIDIA NIM returned a non-JSON response.",
+            unexpected_json_message="NVIDIA NIM returned an unexpected JSON response.",
+        )
 
         if response.status_code >= 400:
-            message, error_code = self._extract_api_error(data)
-            suffix = f" Request ID: {request_id}." if request_id else ""
-            raise NvidiaAPIError(
-                f"NVIDIA NIM API returned HTTP {response.status_code}: {message}{suffix}",
-                status_code=response.status_code,
+            raise_http_api_error(
+                response,
+                data,
                 request_id=request_id,
-                error_code=error_code,
-                retryable=response.status_code in TRANSIENT_STATUS_CODES,
+                api_error_type=NvidiaAPIError,
+                api_name=NVIDIA_API_NAME,
+                include_detail=True,
             )
 
         usage = self._extract_token_usage(data)
@@ -289,31 +310,25 @@ class NvidiaProvider:
             )
         )
         repair_request_id = self._request_id(repair_response) or request_id
-
-        try:
-            repair_data = self._read_json_response(repair_response)
-        except NvidiaResponseError as error:
-            if repair_response.status_code >= 400:
-                suffix = f" Request ID: {repair_request_id}." if repair_request_id else ""
-                raise NvidiaAPIError(
-                    "NVIDIA NIM API returned HTTP "
-                    f"{repair_response.status_code} with a non-JSON repair error.{suffix}",
-                    status_code=repair_response.status_code,
-                    request_id=repair_request_id,
-                    retryable=repair_response.status_code in TRANSIENT_STATUS_CODES,
-                ) from error
-            raise
+        repair_data = read_json_mapping_or_raise_http_error(
+            repair_response,
+            request_id=repair_request_id,
+            response_error_type=NvidiaResponseError,
+            api_error_type=NvidiaAPIError,
+            api_name=NVIDIA_API_NAME,
+            non_json_message="NVIDIA NIM returned a non-JSON response.",
+            unexpected_json_message="NVIDIA NIM returned an unexpected JSON response.",
+            non_json_error_kind="repair error",
+        )
 
         if repair_response.status_code >= 400:
-            message, error_code = self._extract_api_error(repair_data)
-            suffix = f" Request ID: {repair_request_id}." if repair_request_id else ""
-            raise NvidiaAPIError(
-                f"NVIDIA NIM API returned HTTP {repair_response.status_code}: "
-                f"{message}{suffix}",
-                status_code=repair_response.status_code,
+            raise_http_api_error(
+                repair_response,
+                repair_data,
                 request_id=repair_request_id,
-                error_code=error_code,
-                retryable=repair_response.status_code in TRANSIENT_STATUS_CODES,
+                api_error_type=NvidiaAPIError,
+                api_name=NVIDIA_API_NAME,
+                include_detail=True,
             )
 
         return (
@@ -322,106 +337,36 @@ class NvidiaProvider:
             usage + self._extract_token_usage(repair_data),
         )
 
-    @staticmethod
-    def _read_json_response(response: Any) -> Mapping[str, Any]:
-        try:
-            data = response.json()
-        except (TypeError, ValueError) as exc:
-            raise NvidiaResponseError("NVIDIA NIM returned a non-JSON response.") from exc
-
-        if not isinstance(data, Mapping):
-            raise NvidiaResponseError("NVIDIA NIM returned an unexpected JSON response.")
-        return data
-
-    @staticmethod
-    def _extract_api_error(data: Mapping[str, Any]) -> tuple[str, str]:
-        error = data.get("error")
-        if isinstance(error, Mapping):
-            message = error.get("message")
-            code = error.get("code")
-            return (
-                message if isinstance(message, str) and message else "Request failed.",
-                code if isinstance(code, str) else "",
-            )
-        detail = data.get("detail")
-        if isinstance(detail, str) and detail:
-            return detail, ""
-        return "Request failed.", ""
-
     def _post_with_transient_retries(self, payload: Mapping[str, Any]) -> Any:
-        attempt = 0
-        while True:
-            try:
-                response = self._session.post(
-                    self._endpoint_url(),
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=self._timeout_seconds,
-                )
-            except requests.exceptions.Timeout as exc:
-                raise NvidiaAPIError(
-                    "NVIDIA NIM did not respond within "
-                    f"{self._timeout_seconds:g} seconds. Increase Request Timeout in the "
-                    "extension preferences or use a faster model.",
-                    error_code="request_timeout",
-                ) from exc
-            except requests.exceptions.SSLError as exc:
-                raise NvidiaAPIError(
-                    "A secure TLS connection to NVIDIA NIM could not be established. Check "
-                    "the system clock, certificate store, proxy, and firewall settings.",
-                    error_code="tls_error",
-                ) from exc
-            except requests.exceptions.ConnectionError as exc:
-                raise NvidiaAPIError(
-                    "Could not connect to NVIDIA NIM. Confirm Blender network access and "
-                    "check the internet connection, proxy, firewall, DNS settings, and base URL.",
-                    error_code="connection_error",
-                ) from exc
-            except requests.exceptions.RequestException as exc:
-                raise NvidiaAPIError(
-                    "The NVIDIA NIM request failed before receiving a response. Check Blender "
-                    "network access and the extension's connection settings.",
-                    error_code="transport_error",
-                ) from exc
-
-            if (
-                response.status_code not in TRANSIENT_STATUS_CODES
-                or attempt >= self._max_transient_retries
-            ):
-                return response
-            self._sleep(self._retry_delay(response, attempt))
-            attempt += 1
+        return post_with_transient_retries(
+            session=self._session,
+            url=self._endpoint_url(),
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout_seconds=self._timeout_seconds,
+            max_transient_retries=self._max_transient_retries,
+            sleep=self._sleep,
+            random_source=self._random_source,
+            api_error_type=NvidiaAPIError,
+            messages=NVIDIA_TRANSPORT_MESSAGES,
+        )
 
     def _endpoint_url(self) -> str:
         return f"{self._base_url}{NVIDIA_CHAT_COMPLETIONS_PATH}"
 
     def _retry_delay(self, response: Any, attempt: int) -> float:
-        headers = getattr(response, "headers", {})
-        retry_after = headers.get("Retry-After") if isinstance(headers, Mapping) else None
-        if isinstance(retry_after, str):
-            try:
-                return min(30.0, max(0.0, float(retry_after)))
-            except ValueError:
-                pass
-        base_delay = min(5.0, 0.25 * (2**attempt))
-        return base_delay + (self._random_source() * 0.1)
+        return retry_delay(response, attempt, self._random_source)
 
     @staticmethod
     def _request_id(response: Any) -> str:
-        headers = getattr(response, "headers", {})
-        if not isinstance(headers, Mapping):
-            return ""
-        request_id = (
-            headers.get("x-request-id")
-            or headers.get("X-Request-Id")
-            or headers.get("x-nvidia-request-id")
-            or headers.get("NVCF-REQID")
+        return request_id_from_headers(
+            response,
+            ("x-request-id", "X-Request-Id", "x-nvidia-request-id", "NVCF-REQID"),
         )
-        return request_id if isinstance(request_id, str) else ""
 
     @classmethod
     def _extract_token_usage(cls, data: Mapping[str, Any]) -> TokenUsage:
@@ -429,11 +374,11 @@ class NvidiaProvider:
         if not isinstance(usage, Mapping):
             return TokenUsage()
 
-        input_tokens = cls._non_negative_int(usage.get("prompt_tokens"))
-        output_tokens = cls._non_negative_int(usage.get("completion_tokens"))
+        input_tokens = non_negative_int(usage.get("prompt_tokens"))
+        output_tokens = non_negative_int(usage.get("completion_tokens"))
         total_tokens_value = usage.get("total_tokens")
         total_tokens = (
-            cls._non_negative_int(total_tokens_value)
+            non_negative_int(total_tokens_value)
             if isinstance(total_tokens_value, int) and not isinstance(total_tokens_value, bool)
             else input_tokens + output_tokens
         )
@@ -443,12 +388,6 @@ class NvidiaProvider:
             total_tokens=total_tokens,
         )
 
-    @staticmethod
-    def _non_negative_int(value: Any) -> int:
-        if isinstance(value, int) and not isinstance(value, bool):
-            return max(0, value)
-        return 0
-
     @classmethod
     def _extract_and_validate_plan(
         cls,
@@ -456,22 +395,18 @@ class NvidiaProvider:
         response_schema: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         output_text = cls._extract_output_text(data)
-
-        try:
-            plan = json.loads(_strip_json_code_fence(output_text))
-        except json.JSONDecodeError as exc:
-            raise NvidiaResponseError("NVIDIA NIM returned invalid plan JSON.") from exc
-
-        if not isinstance(plan, Mapping):
-            raise NvidiaResponseError("NVIDIA NIM returned a plan that is not an object.")
-
-        try:
-            fastjsonschema.compile(dict(response_schema))(plan)
-        except fastjsonschema.JsonSchemaException as exc:
-            message = f"NVIDIA NIM returned a plan that failed local validation: {exc.message}"
-            raise NvidiaResponseError(message) from exc
-
-        return plan
+        return parse_and_validate_plan(
+            output_text,
+            response_schema,
+            response_error_type=NvidiaResponseError,
+            invalid_json_message="NVIDIA NIM returned invalid plan JSON.",
+            not_object_message="NVIDIA NIM returned a plan that is not an object.",
+            validation_message=lambda error: (
+                "NVIDIA NIM returned a plan that failed local validation: "
+                f"{error.message}"
+            ),
+            normalize_text=_strip_json_code_fence,
+        )
 
     @staticmethod
     def _extract_output_text(data: Mapping[str, Any]) -> str:

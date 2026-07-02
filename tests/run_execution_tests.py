@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -6,6 +7,7 @@ import bpy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+os.environ["OPENAI_IMAGE_GENERATION_ENABLED"] = "false"
 
 from extension.context import (  # noqa: E402
     ContextOptions,
@@ -37,10 +39,10 @@ def ready_plan(snapshot_id: str, operations: list[dict[str, Any]]) -> Any:
             "intent_summary": "Exercise every controlled operation.",
             "assumptions": [],
             "questions": [],
-            "operations": operations,
+        "operations": operations,
         },
         expected_snapshot_id=snapshot_id,
-        limits=OperationLimits(max_operations_per_plan=40),
+        limits=OperationLimits(max_operations_per_plan=80),
     )
 
 
@@ -62,6 +64,15 @@ obj_asset_path.write_text(
     ),
     encoding="utf-8",
 )
+png_asset_path = asset_dir / "exec_texture.png"
+generated_saved_path = asset_dir / "exec_generated_saved.png"
+generated_saved_path.unlink(missing_ok=True)
+seed_image = data.images.new("ExecTextureSeed", width=1, height=1)
+seed_image.pixels[:] = (1.0, 0.0, 0.0, 1.0)
+seed_image.filepath_raw = str(png_asset_path)
+seed_image.file_format = "PNG"
+seed_image.save()
+data.images.remove(seed_image)
 
 source = data.objects["Cube"]
 source.name = "ExecSource"
@@ -110,6 +121,14 @@ separate_mesh.materials.append(separate_b)
 for index, polygon in enumerate(separate_mesh.polygons):
     polygon.material_index = index % 2
 
+texture_mesh = source.data.copy()
+texture_target = data.objects.new("ExecTextureSource", texture_mesh)
+scene.collection.objects.link(texture_target)
+texture_material = data.materials.new("ExecTextureExistingMaterial")
+texture_material.use_nodes = True
+texture_mesh.materials.append(texture_material)
+texture_positions_before = tuple(vertex.co.copy() for vertex in texture_mesh.vertices)
+
 blend_asset = data.objects.new("ExecBlendAsset", source.data.copy())
 scene.collection.objects.link(blend_asset)
 blend_asset_path = asset_dir / "exec_library.blend"
@@ -138,6 +157,8 @@ boolean_cutter_id = target_id(snapshot, "ExecBooleanCutter", TargetKind.OBJECT)
 join_a_id = target_id(snapshot, "ExecJoinA", TargetKind.OBJECT)
 join_b_id = target_id(snapshot, "ExecJoinB", TargetKind.OBJECT)
 separate_target_id = target_id(snapshot, "ExecSeparateSource", TargetKind.OBJECT)
+texture_target_id = target_id(snapshot, "ExecTextureSource", TargetKind.OBJECT)
+texture_material_id = target_id(snapshot, "ExecTextureExistingMaterial", TargetKind.MATERIAL)
 
 plan = ready_plan(
     snapshot.snapshot_id,
@@ -181,6 +202,342 @@ plan = ready_plan(
             "metallic": 0.2,
             "roughness": 0.8,
             "alpha": 1.0,
+        },
+        {
+            "operation_id": "create_material_preset",
+            "type": "CREATE_MATERIAL_PRESET",
+            "name": "ExecRoughPlastic",
+            "material_family": "matte_plastic",
+            "base_color": [0.02, 0.02, 0.025],
+            "secondary_color": [0.08, 0.08, 0.09],
+            "metallic": 0.0,
+            "roughness": 0.9,
+            "alpha": 1.0,
+            "transmission": 0.0,
+            "emission_strength": 0.0,
+            "texture_scale": 14.0,
+            "detail_strength": 0.35,
+            "bump_strength": 0.08,
+        },
+        {
+            "operation_id": "create_procedural_wood",
+            "type": "CREATE_PROCEDURAL_MATERIAL",
+            "name": "ExecProceduralWood",
+            "material_family": "wood",
+            "pattern": "wood_grain",
+            "base_color": [0.32, 0.16, 0.07],
+            "secondary_color": [0.78, 0.48, 0.22],
+            "metallic": 0.0,
+            "roughness": 0.58,
+            "alpha": 1.0,
+            "texture_scale": 12.0,
+            "detail_strength": 0.7,
+            "bump_strength": 0.18,
+        },
+        {
+            "operation_id": "assign_material_preset",
+            "type": "ASSIGN_MATERIAL",
+            "target_ids": [texture_target_id],
+            "material_id": "result:create_material_preset",
+        },
+        {
+            "operation_id": "load_image_texture",
+            "type": "LOAD_IMAGE_TEXTURE",
+            "source": str(png_asset_path),
+            "image_name": "ExecTextureImage",
+            "color_space": "sRGB",
+            "max_size_mb": 1,
+        },
+        {
+            "operation_id": "create_texture_noise_node",
+            "type": "CREATE_SHADER_NODE",
+            "material_id": texture_material_id,
+            "node_type": "ShaderNodeTexNoise",
+            "node_label": "Exec Texture Noise",
+        },
+        {
+            "operation_id": "set_texture_noise_scale",
+            "type": "SET_SHADER_NODE_VALUE",
+            "material_id": texture_material_id,
+            "node_ref": "result:create_texture_noise_node",
+            "input_name": "Scale",
+            "value": 22.0,
+        },
+        {
+            "operation_id": "connect_texture_noise",
+            "type": "CONNECT_SHADER_NODES",
+            "material_id": texture_material_id,
+            "from_node": "result:create_texture_noise_node",
+            "from_socket": "Fac",
+            "to_node": "principled_bsdf",
+            "to_socket": "Roughness",
+        },
+        {
+            "operation_id": "create_image_texture_node",
+            "type": "CREATE_IMAGE_TEXTURE_NODE",
+            "material_id": texture_material_id,
+            "image_id": "result:load_image_texture",
+            "node_label": "Exec Image Texture",
+            "connect_to": "Base Color",
+            "projection": "FLAT",
+            "extension": "REPEAT",
+        },
+        {
+            "operation_id": "set_texture_mapping",
+            "type": "SET_TEXTURE_MAPPING",
+            "material_id": texture_material_id,
+            "texture_node_ref": "result:create_image_texture_node",
+            "translation": [0.1, 0.2, 0.0],
+            "rotation": [0.0, 0.0, 0.25],
+            "scale": [2.0, 2.0, 1.0],
+            "projection": "FLAT",
+            "extension": "EXTEND",
+        },
+        {
+            "operation_id": "create_uv_map",
+            "type": "CREATE_UV_MAP",
+            "target_ids": [texture_target_id],
+            "uv_map_name": "ExecAIUV",
+            "set_active": True,
+            "set_render": True,
+        },
+        {
+            "operation_id": "unwrap_uv_map",
+            "type": "UNWRAP_UV_MAP",
+            "target_ids": [texture_target_id],
+            "uv_map_name": "ExecAIUV",
+            "method": "smart_project",
+            "create_if_missing": True,
+            "overwrite_existing": True,
+            "margin": 0.02,
+        },
+        {
+            "operation_id": "pack_uv_islands",
+            "type": "PACK_UV_ISLANDS",
+            "target_ids": [texture_target_id],
+            "uv_map_name": "ExecAIUV",
+            "margin": 0.02,
+            "rotate": True,
+        },
+        {
+            "operation_id": "assign_uv_map",
+            "type": "ASSIGN_UV_MAP",
+            "target_id": texture_target_id,
+            "material_id": texture_material_id,
+            "texture_node_ref": "result:create_image_texture_node",
+            "uv_map_name": "ExecAIUV",
+        },
+        {
+            "operation_id": "import_pbr_set",
+            "type": "IMPORT_PBR_TEXTURE_SET",
+            "name_prefix": "ExecPBR",
+            "textures": [
+                {
+                    "role": "base_color",
+                    "source": str(png_asset_path),
+                    "color_space": "sRGB",
+                    "max_size_mb": 1,
+                },
+                {
+                    "role": "roughness",
+                    "source": str(png_asset_path),
+                    "color_space": "Non-Color",
+                    "max_size_mb": 1,
+                },
+            ],
+        },
+        {
+            "operation_id": "load_normal_texture",
+            "type": "LOAD_IMAGE_TEXTURE",
+            "source": str(png_asset_path),
+            "image_name": "ExecNormalTexture",
+            "color_space": "Non-Color",
+            "max_size_mb": 1,
+        },
+        {
+            "operation_id": "set_pbr_normal_role",
+            "type": "SET_PBR_TEXTURE_ROLE",
+            "texture_set_id": "result:import_pbr_set",
+            "image_id": "result:load_normal_texture",
+            "role": "normal",
+            "color_space": "Non-Color",
+        },
+        {
+            "operation_id": "create_pbr_material",
+            "type": "CREATE_PBR_MATERIAL",
+            "name": "ExecPBRMaterial",
+            "texture_set_id": "result:import_pbr_set",
+            "base_color_image_id": None,
+            "roughness_image_id": None,
+            "metallic_image_id": None,
+            "normal_image_id": "result:load_normal_texture",
+            "ambient_occlusion_image_id": None,
+            "displacement_image_id": None,
+            "alpha_image_id": None,
+            "emission_image_id": None,
+            "base_color": [0.8, 0.8, 0.8],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "alpha": 1.0,
+        },
+        {
+            "operation_id": "generate_texture_image",
+            "type": "GENERATE_TEXTURE_IMAGE",
+            "prompt": "execution test generated ceramic texture",
+            "image_name": "ExecGeneratedTexture",
+            "width": 8,
+            "height": 8,
+            "pattern": "checker",
+            "base_color": [0.1, 0.2, 0.8, 1.0],
+            "secondary_color": [0.9, 0.9, 1.0, 1.0],
+            "color_space": "sRGB",
+            "pack": True,
+        },
+        {
+            "operation_id": "save_generated_texture",
+            "type": "SAVE_GENERATED_TEXTURE",
+            "image_id": "result:generate_texture_image",
+            "filepath": str(generated_saved_path),
+            "file_format": "PNG",
+            "pack_after_save": True,
+        },
+        {
+            "operation_id": "attach_generated_texture",
+            "type": "ATTACH_GENERATED_TEXTURE",
+            "material_id": texture_material_id,
+            "image_id": "result:generate_texture_image",
+            "node_label": "Exec Generated Texture",
+            "connect_to": "Emission Color",
+            "uv_map_name": "ExecAIUV",
+        },
+        {
+            "operation_id": "create_paint_image",
+            "type": "CREATE_PAINT_IMAGE",
+            "image_name": "ExecPaintImage",
+            "width": 8,
+            "height": 8,
+            "fill_color": [0.0, 0.0, 0.0, 1.0],
+            "color_space": "sRGB",
+            "pack": True,
+        },
+        {
+            "operation_id": "assign_paint_slot",
+            "type": "ASSIGN_PAINT_SLOT",
+            "target_id": texture_target_id,
+            "material_id": texture_material_id,
+            "image_id": "result:create_paint_image",
+            "uv_map_name": "ExecAIUV",
+            "node_label": "Exec Paint Slot",
+            "connect_to": "Base Color",
+        },
+        {
+            "operation_id": "paint_texture_strokes",
+            "type": "APPLY_TEXTURE_PAINT_STROKES",
+            "image_id": "result:create_paint_image",
+            "blend_mode": "replace",
+            "strokes": [
+                {
+                    "uv": [0.5, 0.5],
+                    "color": [1.0, 0.0, 0.0, 1.0],
+                    "radius": 0.25,
+                    "strength": 1.0,
+                }
+            ],
+        },
+        {
+            "operation_id": "fill_texture_region",
+            "type": "FILL_TEXTURE_REGION",
+            "image_id": "result:create_paint_image",
+            "region": {"kind": "rect", "min_uv": [0.0, 0.0], "max_uv": [0.25, 0.25]},
+            "color": [0.0, 1.0, 0.0, 1.0],
+            "strength": 1.0,
+            "blend_mode": "replace",
+        },
+        {
+            "operation_id": "create_bake_target",
+            "type": "CREATE_BAKE_TARGET_IMAGE",
+            "image_name": "ExecBakeTarget",
+            "width": 8,
+            "height": 8,
+            "fill_color": [0.0, 0.0, 0.0, 1.0],
+            "color_space": "sRGB",
+            "pack": True,
+        },
+        {
+            "operation_id": "bake_texture_pass",
+            "type": "BAKE_TEXTURE_PASS",
+            "target_id": texture_target_id,
+            "image_id": "result:create_bake_target",
+            "uv_map_name": "ExecAIUV",
+            "pass_type": "base_color",
+            "samples": 4,
+            "margin": 0.02,
+        },
+        {
+            "operation_id": "assign_baked_texture",
+            "type": "ASSIGN_BAKED_TEXTURE",
+            "material_id": texture_material_id,
+            "image_id": "result:create_bake_target",
+            "node_label": "Exec Baked Texture",
+            "connect_to": "Base Color",
+            "uv_map_name": "ExecAIUV",
+        },
+        {
+            "operation_id": "add_texture_displace",
+            "type": "ADD_DISPLACE_MODIFIER",
+            "target_ids": [texture_target_id],
+            "name": "Exec Organic Surface",
+            "texture_pattern": "noise",
+            "strength": 0.05,
+            "midlevel": 0.5,
+            "texture_scale": 18.0,
+            "coordinates": "local",
+            "apply": False,
+        },
+        {
+            "operation_id": "add_texture_smooth",
+            "type": "ADD_SMOOTH_MODIFIER",
+            "target_ids": [texture_target_id],
+            "name": "Exec Surface Smooth",
+            "factor": 0.35,
+            "iterations": 3,
+            "apply": False,
+        },
+        {
+            "operation_id": "add_texture_remesh",
+            "type": "ADD_REMESH_MODIFIER",
+            "target_ids": [texture_target_id],
+            "name": "Exec Remesh Preview",
+            "mode": "voxel",
+            "voxel_size": 0.25,
+            "adaptivity": 0.0,
+            "preserve_volume": True,
+            "apply": False,
+        },
+        {
+            "operation_id": "smooth_texture_region",
+            "type": "SCULPT_SMOOTH_REGION",
+            "target_id": texture_target_id,
+            "region": {"kind": "all", "material_id": None, "vertex_group": None},
+            "strength": 0.25,
+            "radius": 0.5,
+            "iterations": 2,
+        },
+        {
+            "operation_id": "apply_texture_brush",
+            "type": "APPLY_SCULPT_BRUSH_STROKES",
+            "target_id": texture_target_id,
+            "brush_type": "draw",
+            "radius": 0.1,
+            "strength": 0.25,
+            "falloff": "smooth",
+            "strokes": [
+                {
+                    "location": [100.0, 100.0, 100.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "pressure": 0.5,
+                }
+            ],
         },
         {
             "operation_id": "move_created",
@@ -352,7 +709,7 @@ plan = ready_plan(
 )
 
 result = execute_plan(bpy.context, plan, snapshot)
-assert result.completed_operations == 23
+assert result.completed_operations == 55
 assert not result.partial
 assert not result.rolled_back
 assert result.changed_count >= 8
@@ -401,6 +758,55 @@ assert tuple(round(float(value), 4) for value in material.diffuse_color) == (
     0.1,
     0.2,
     1.0,
+)
+texture_preset = data.materials["ExecRoughPlastic"]
+procedural_wood = data.materials["ExecProceduralWood"]
+texture_image = data.images["ExecTextureImage"]
+normal_image = data.images["ExecNormalTexture"]
+generated_texture = data.images["ExecGeneratedTexture"]
+paint_image = data.images["ExecPaintImage"]
+bake_target = data.images["ExecBakeTarget"]
+texture_node = texture_material.node_tree.nodes["Exec Texture Noise"]
+image_texture_node = texture_material.node_tree.nodes["Exec Image Texture"]
+texture_target = data.objects["ExecTextureSource"]
+assert bool(texture_preset.use_nodes)
+assert bool(procedural_wood.use_nodes)
+assert texture_image.size[0] == 1
+assert normal_image.colorspace_settings.name == "Non-Color"
+assert generated_texture.size[:] == (8, 8)
+assert generated_saved_path.exists()
+assert paint_image.size[:] == (8, 8)
+assert bake_target["ai_bake_pass"] == "base_color"
+assert bake_target["ai_bake_source"] == "ExecTextureSource"
+assert texture_target.active_material == texture_preset
+assert texture_target.data.uv_layers.get("ExecAIUV") is not None
+assert round(float(texture_node.inputs["Scale"].default_value), 4) == 22.0
+assert image_texture_node.image == texture_image
+assert image_texture_node.projection == "FLAT"
+assert image_texture_node.extension == "EXTEND"
+mapping_node = texture_material.node_tree.nodes["AI Mapping Exec Image Texture"]
+assert tuple(round(float(value), 4) for value in mapping_node.inputs["Scale"].default_value) == (
+    2.0,
+    2.0,
+    1.0,
+)
+uv_node = texture_material.node_tree.nodes["AI UV Exec Image Texture"]
+assert uv_node.uv_map == "ExecAIUV"
+assert data.materials["ExecPBRMaterial"].node_tree.nodes["AI PBR base_color"].image.name == (
+    "ExecPBR_base_color"
+)
+assert texture_material.node_tree.nodes["Exec Generated Texture"].image == generated_texture
+assert texture_material.node_tree.nodes["Exec Paint Slot"].image == paint_image
+assert texture_material.node_tree.nodes["Exec Baked Texture"].image == bake_target
+paint_pixels = tuple(round(float(value), 4) for value in paint_image.pixels[:16])
+assert paint_pixels[:4] == (0.0, 1.0, 0.0, 1.0)
+assert texture_material.node_tree.links[:]
+assert texture_target.modifiers["Exec Organic Surface"].type == "DISPLACE"
+assert texture_target.modifiers["Exec Surface Smooth"].type == "SMOOTH"
+assert texture_target.modifiers["Exec Remesh Preview"].type == "REMESH"
+assert any(
+    (vertex.co - before).length > 1e-6
+    for vertex, before in zip(texture_target.data.vertices, texture_positions_before, strict=True)
 )
 assert tuple(collection.name for collection in renamed.users_collection) == (
     "ExecDestination",
@@ -627,4 +1033,411 @@ except ExecutionPreflightError as error:
 else:
     raise AssertionError("Stale target passed execution preflight.")
 
+
+def _reset_scene() -> None:
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete()
+
+
+def _run_shader_track_execution() -> None:
+    _reset_scene()
+    material = data.materials.new("TrackAMaterial")
+    material.use_nodes = True
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    cube = cast(Any, bpy.context.object)
+    cube.name = "TrackASource"
+    cube.data.materials.append(material)
+    snapshot = read_scene_context(
+        bpy.context,
+        ContextOptions(scope=ContextScope.SCENE, include_custom_properties=True),
+    )
+    material_id = target_id(snapshot, "TrackAMaterial", TargetKind.MATERIAL)
+
+    plan = ready_plan(
+        snapshot.snapshot_id,
+        [
+            {
+                "operation_id": "create_noise",
+                "type": "CREATE_SHADER_NODE",
+                "material_id": material_id,
+                "node_type": "ShaderNodeTexNoise",
+                "node_label": "AI Test Noise",
+            },
+            {
+                "operation_id": "create_ramp",
+                "type": "CREATE_SHADER_COLOR_RAMP",
+                "material_id": material_id,
+                "node_label": "AI Test Ramp",
+                "stops": [
+                    {"position": 0.0, "color": [0.0, 0.0, 1.0, 1.0]},
+                    {"position": 1.0, "color": [1.0, 0.0, 0.0, 1.0]},
+                ],
+            },
+            {
+                "operation_id": "connect_noise_ramp",
+                "type": "CONNECT_SHADER_NODES",
+                "material_id": material_id,
+                "from_node": "result:create_noise",
+                "from_socket": "Fac",
+                "to_node": "result:create_ramp",
+                "to_socket": "Fac",
+            },
+            {
+                "operation_id": "connect_ramp_principled",
+                "type": "CONNECT_SHADER_NODES",
+                "material_id": material_id,
+                "from_node": "result:create_ramp",
+                "from_socket": "Color",
+                "to_node": "principled_bsdf",
+                "to_socket": "Base Color",
+            },
+            {
+                "operation_id": "set_ramp",
+                "type": "SET_SHADER_COLOR_RAMP",
+                "material_id": material_id,
+                "node_ref": "result:create_ramp",
+                "stops": [
+                    {"position": 0.0, "color": [0.0, 1.0, 0.0, 1.0]},
+                    {"position": 0.5, "color": [1.0, 1.0, 0.0, 1.0]},
+                    {"position": 1.0, "color": [1.0, 0.0, 0.0, 1.0]},
+                ],
+            },
+            {
+                "operation_id": "disconnect_ramp_principled",
+                "type": "DISCONNECT_SHADER_LINK",
+                "material_id": material_id,
+                "from_node": "result:create_ramp",
+                "from_socket": "Color",
+                "to_node": "principled_bsdf",
+                "to_socket": "Base Color",
+            },
+            {
+                "operation_id": "mix_chain",
+                "type": "CREATE_SHADER_MIX_CHAIN",
+                "material_id": material_id,
+                "chain_label": "AI TrackA Mix",
+                "template": "noise_to_base_color",
+                "base_color": [0.0, 0.0, 1.0, 1.0],
+                "secondary_color": [1.0, 0.0, 0.0, 1.0],
+                "strength": 0.5,
+                "scale": 8.0,
+            },
+            {
+                "operation_id": "remove_ramp",
+                "type": "REMOVE_SHADER_NODE",
+                "material_id": material_id,
+                "node_ref": "result:create_ramp",
+                "assistant_created_only": True,
+            },
+            {
+                "operation_id": "validate_output",
+                "type": "VALIDATE_MATERIAL_OUTPUT",
+                "material_id": material_id,
+                "repair": True,
+            },
+        ],
+    )
+    result = execute_plan(bpy.context, plan, snapshot)
+
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    assert result.completed_operations == len(plan.operations)
+    assert nodes.get("AI Test Noise") is not None
+    assert nodes.get("AI Test Ramp") is None
+    assert nodes.get("AI TrackA Mix Noise") is not None
+    assert nodes.get("AI TrackA Mix Ramp") is not None
+    output = nodes.get("Material Output")
+    assert output is not None
+    assert output.inputs["Surface"].links
+    assert any(link.to_socket.name == "Base Color" for link in links)
+
+
+def _run_future_tracks_execution() -> None:
+    _reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0.0, 0.0, 0.0))
+    cube = cast(Any, bpy.context.object)
+    cube.name = "FutureTracksSource"
+    material = data.materials.new("FutureTracksMaterial")
+    cube.data.materials.append(material)
+    for polygon in cube.data.polygons:
+        polygon.material_index = 0
+    group = cube.vertex_groups.new(name="FutureRegion")
+    group.add(tuple(int(vertex.index) for vertex in cube.data.vertices), 1.0, "REPLACE")
+
+    snapshot = read_scene_context(
+        bpy.context,
+        ContextOptions(scope=ContextScope.SCENE, include_custom_properties=True),
+    )
+    cube_id = target_id(snapshot, "FutureTracksSource", TargetKind.OBJECT)
+    material_id = target_id(snapshot, "FutureTracksMaterial", TargetKind.MATERIAL)
+
+    plan = ready_plan(
+        snapshot.snapshot_id,
+        [
+            {
+                "operation_id": "geo_nodes",
+                "type": "CREATE_GEOMETRY_NODES_PRESET",
+                "target_ids": [cube_id],
+                "name": "AI Scatter",
+                "preset": "scatter_points",
+                "inputs": {
+                    "density": 12.0,
+                    "scale": 0.25,
+                    "strength": None,
+                    "count": 8.0,
+                    "seed": 3.0,
+                },
+                "apply": False,
+            },
+            {
+                "operation_id": "set_geo_input",
+                "type": "SET_GEOMETRY_NODE_INPUT",
+                "target_id": cube_id,
+                "modifier_name": "AI Scatter",
+                "input_name": "density",
+                "value": 20.0,
+            },
+            {
+                "operation_id": "smooth_copy",
+                "type": "CREATE_SMOOTHED_COPY",
+                "target_id": cube_id,
+                "name": "FutureSmoothedCopy",
+                "strength": 0.5,
+                "iterations": 1,
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "displaced_copy",
+                "type": "CREATE_DISPLACED_COPY",
+                "target_id": cube_id,
+                "name": "FutureDisplacedCopy",
+                "strength": 0.1,
+                "direction": [0.0, 0.0, 1.0],
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "remeshed_copy",
+                "type": "CREATE_REMESHED_COPY",
+                "target_id": cube_id,
+                "name": "FutureRemeshedCopy",
+                "mode": "triangulate",
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "replace_copy",
+                "type": "REPLACE_OBJECT_WITH_GENERATED_COPY",
+                "target_id": cube_id,
+                "generated_object_id": "result:smooth_copy",
+                "hide_original": True,
+            },
+            {
+                "operation_id": "sculpt_region_material",
+                "type": "CREATE_SCULPT_REGION_FROM_MATERIAL",
+                "target_id": cube_id,
+                "material_id": material_id,
+                "region_name": "Material Region",
+            },
+            {
+                "operation_id": "sculpt_region_group",
+                "type": "CREATE_SCULPT_REGION_FROM_VERTEX_GROUP",
+                "target_id": cube_id,
+                "vertex_group": "FutureRegion",
+                "region_name": "Group Region",
+            },
+            {
+                "operation_id": "sculpt_mask",
+                "type": "CREATE_SCULPT_MASK",
+                "region_id": "result:sculpt_region_group",
+                "mask_name": "FutureMask",
+                "strength": 0.8,
+            },
+            {
+                "operation_id": "sculpt_apply",
+                "type": "APPLY_SCULPT_REGION_OPERATION",
+                "region_id": "result:sculpt_region_group",
+                "operation": "smooth",
+                "strength": 0.25,
+                "iterations": 1,
+            },
+            {
+                "operation_id": "multires",
+                "type": "ADD_MULTIRES_MODIFIER",
+                "target_ids": [cube_id],
+                "name": "AI Multires",
+                "levels": 1,
+                "render_levels": 1,
+                "apply": False,
+            },
+            {
+                "operation_id": "shape_key",
+                "type": "CREATE_SHAPE_KEY",
+                "target_id": cube_id,
+                "name": "Future Shape",
+                "value": 0.5,
+                "from_generated_object_id": "result:displaced_copy",
+            },
+            {
+                "operation_id": "preview",
+                "type": "CREATE_PREVIEW_IMAGE",
+                "preview_name": "FuturePreview",
+                "preview_kind": "generated_mesh",
+                "target_id": "result:smooth_copy",
+                "material_id": None,
+                "width": 64,
+                "height": 64,
+            },
+        ],
+    )
+    result = execute_plan(bpy.context, plan, snapshot)
+
+    assert result.completed_operations == len(plan.operations)
+    assert cube.modifiers["AI Scatter"]["ai_input_density"] == 20.0
+    assert cube.modifiers["AI Multires"].type == "MULTIRES"
+    assert data.objects["FutureSmoothedCopy"].hide_viewport is False
+    assert data.objects["FutureDisplacedCopy"].data.vertices[0].co.z != (
+        cube.data.vertices[0].co.z
+    )
+    assert len(data.objects["FutureRemeshedCopy"].data.polygons) >= len(cube.data.polygons)
+    assert cube.hide_viewport is True
+    assert cube.vertex_groups.get("FutureMask") is not None
+    assert cube.data.shape_keys.key_blocks.get("Future Shape") is not None
+    assert data.images["FuturePreview"]["ai_preview_kind"] == "generated_mesh"
+
+
+def _run_residual_features_execution() -> None:
+    _reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0.0, 0.0, 0.0))
+    cube = cast(Any, bpy.context.object)
+    cube.name = "ResidualSource"
+    material = data.materials.new("ResidualMaterial")
+    material.use_nodes = True
+    cube.data.materials.append(material)
+    for polygon in cube.data.polygons:
+        polygon.material_index = 0
+    group = cube.vertex_groups.new(name="ResidualGroup")
+    group.add(tuple(int(vertex.index) for vertex in cube.data.vertices), 1.0, "REPLACE")
+
+    bpy.ops.object.camera_add(location=(0.0, -6.0, 4.0), rotation=(1.1, 0.0, 0.0))
+    camera = cast(Any, bpy.context.object)
+    camera.name = "ResidualCamera"
+    cast(Any, bpy.context.scene).camera = camera
+
+    snapshot = read_scene_context(
+        bpy.context,
+        ContextOptions(scope=ContextScope.SCENE, include_custom_properties=True),
+    )
+    cube_id = target_id(snapshot, "ResidualSource", TargetKind.OBJECT)
+    material_id = target_id(snapshot, "ResidualMaterial", TargetKind.MATERIAL)
+    camera_id = target_id(snapshot, "ResidualCamera", TargetKind.OBJECT)
+
+    plan = ready_plan(
+        snapshot.snapshot_id,
+        [
+            {
+                "operation_id": "shader_template",
+                "type": "CREATE_SHADER_GRAPH_TEMPLATE",
+                "material_id": material_id,
+                "graph_label": "AI Residual Graph",
+                "template": "layered_noise_material",
+                "base_color": [0.1, 0.1, 0.8, 1.0],
+                "secondary_color": [0.9, 0.2, 0.1, 1.0],
+                "strength": 0.4,
+                "scale": 12.0,
+            },
+            {
+                "operation_id": "geometry_group",
+                "type": "CREATE_GEOMETRY_NODE_GROUP_TEMPLATE",
+                "target_ids": [cube_id],
+                "name": "AI Residual Group",
+                "template": "point_scatter_group",
+                "inputs": {
+                    "density": 8.0,
+                    "scale": 0.2,
+                    "strength": None,
+                    "count": 5.0,
+                    "seed": 1.0,
+                },
+                "apply": False,
+            },
+            {
+                "operation_id": "face_set_material",
+                "type": "CREATE_FACE_SET_FROM_MATERIAL",
+                "target_id": cube_id,
+                "material_id": material_id,
+                "face_set_name": "ResidualMaterialFaces",
+            },
+            {
+                "operation_id": "face_set_group",
+                "type": "CREATE_FACE_SET_FROM_VERTEX_GROUP",
+                "target_id": cube_id,
+                "vertex_group": "ResidualGroup",
+                "face_set_name": "ResidualGroupFaces",
+            },
+            {
+                "operation_id": "dyntopo_copy",
+                "type": "CREATE_DYNAMIC_TOPOLOGY_COPY",
+                "target_id": cube_id,
+                "name": "ResidualDynamicCopy",
+                "detail_level": 2,
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "apply_generated",
+                "type": "APPLY_GENERATED_MESH_TO_OBJECT",
+                "target_id": cube_id,
+                "generated_object_id": "result:dyntopo_copy",
+                "preserve_original_data": True,
+                "hide_generated": True,
+            },
+            {
+                "operation_id": "rig_safe_key",
+                "type": "CREATE_RIG_SAFE_SHAPE_KEY",
+                "target_id": cube_id,
+                "name": "Residual Rig Safe",
+                "value": 0.25,
+                "from_generated_object_id": "result:dyntopo_copy",
+                "allow_rigged": False,
+                "preserve_animation": True,
+            },
+            {
+                "operation_id": "set_shape_key",
+                "type": "SET_SHAPE_KEY_VALUE",
+                "target_id": cube_id,
+                "shape_key_name": "Residual Rig Safe",
+                "value": 0.75,
+            },
+            {
+                "operation_id": "render_preview",
+                "type": "CREATE_RENDER_PREVIEW_IMAGE",
+                "preview_name": "ResidualRenderPreview",
+                "mode": "material",
+                "target_id": cube_id,
+                "camera_id": camera_id,
+                "width": 64,
+                "height": 64,
+                "samples": 8,
+                "pack": True,
+            },
+        ],
+    )
+    result = execute_plan(bpy.context, plan, snapshot)
+
+    assert result.completed_operations == len(plan.operations)
+    assert material.node_tree.nodes.get("AI Residual Graph Noise") is not None
+    assert cube.modifiers["AI Residual Group"]["ai_geometry_node_group_template"] == (
+        "point_scatter_group"
+    )
+    assert any(change.datablock_kind == "face_set" for change in result.changes)
+    assert data.objects["ResidualDynamicCopy"].hide_viewport is True
+    assert len(cube.data.polygons) > 6
+    shape_key = cube.data.shape_keys.key_blocks["Residual Rig Safe"]
+    assert round(float(shape_key.value), 4) == 0.75
+    preview = data.images["ResidualRenderPreview"]
+    assert preview.size[:] == (64, 64)
+    assert preview["ai_preview_kind"] == "render"
+
+
+_run_shader_track_execution()
+_run_future_tracks_execution()
+_run_residual_features_execution()
 print("Blender controlled execution tests: PASS")

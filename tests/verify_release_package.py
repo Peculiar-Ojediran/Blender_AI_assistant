@@ -9,8 +9,10 @@ from zipfile import ZipFile
 REQUIRED_FILES = {
     "__init__.py",
     "blender_manifest.toml",
+    "providers/_shared.py",
     "providers/base.py",
     "providers/openai.py",
+    "providers/openai_images.py",
     "operations/executor.py",
     "operations/limits.py",
     "safety/policy.py",

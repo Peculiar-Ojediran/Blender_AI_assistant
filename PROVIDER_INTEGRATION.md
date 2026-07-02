@@ -2,10 +2,10 @@
 
 ## Current Scope
 
-The MVP supports two providers: the OpenAI Responses API and NVIDIA NIM chat completions. The
-extension sends requests directly over HTTPS with `requests`; it does not depend on a provider SDK or
-a local bridge service. The default development configuration is OpenAI `gpt-5-nano` with low
-reasoning effort.
+The MVP supports two planning providers: the OpenAI Responses API and NVIDIA NIM chat completions.
+The extension sends requests directly over HTTPS with `requests`; it does not depend on a provider
+SDK or a local bridge service. The default development configuration is OpenAI `gpt-5-nano` with low
+reasoning effort. Generated texture images can also optionally use OpenAI image generation.
 
 The Blender model selector offers `gpt-5-nano`, `gpt-5.4-nano`, `gpt-5.4-mini`, and `gpt-5.5` plus a
 validated custom model name. The default remains the model used by the established live-test baseline;
@@ -68,6 +68,23 @@ schema-repair request using the original prompt, scene context, invalid answer, 
 the same guided JSON schema. The repaired response must pass the same local validation; otherwise the
 request still fails closed.
 
+## OpenAI Image Request Contract
+
+`GENERATE_TEXTURE_IMAGE` uses deterministic local pattern generation by default. When
+`OPENAI_IMAGE_GENERATION_ENABLED=true`, it uses `POST /v1/images/generations` with the same
+`OPENAI_API_KEY`, `gpt-image-2` by default, one PNG image, and low quality by default. The provider
+expects `b64_json` image data, writes it to a temporary PNG, loads it into Blender, and scales it to
+the operation's requested dimensions.
+
+Optional settings:
+
+- `OPENAI_IMAGE_MODEL`, default `gpt-image-2`.
+- `OPENAI_IMAGE_QUALITY`, default `low`; allowed values are `auto`, `low`, `medium`, and `high`.
+- `OPENAI_IMAGE_TIMEOUT`, default 180 seconds.
+
+The operation remains high risk because it can call a billable external image provider and create
+image data. The local deterministic fallback remains available for routine tests and offline work.
+
 ## Timeouts, Retries, and Failures
 
 Every request has a configurable positive timeout, defaulting to 180 seconds with a 600-second hard
@@ -120,10 +137,10 @@ HTTP call already in progress; the timeout is the hard bound for that call.
 ## Configuration and Credentials
 
 API-key resolution order is the selected provider's operating-system key, the source-development
-`.env` file, then Blender's masked session-only preference. OpenAI uses `OPENAI_API_KEY`; NVIDIA uses
-`NVIDIA_API_KEY`. `.env` is plaintext, ignored by Git, and excluded from the extension package. It
-may still be synchronized by OneDrive, so an operating-system secret or dedicated secret manager is
-preferable for long-lived keys.
+`.env` file, then Blender's masked session-only preference. OpenAI planning and OpenAI image
+generation use `OPENAI_API_KEY`; NVIDIA uses `NVIDIA_API_KEY`. `.env` is plaintext, ignored by Git,
+and excluded from the extension package. It may still be synchronized by OneDrive, so an
+operating-system secret or dedicated secret manager is preferable for long-lived keys.
 
 ## Deferred Work
 

@@ -32,7 +32,6 @@ from ..providers.registry import (
     PROVIDER_NVIDIA,
     PROVIDER_OPENAI,
     provider_api_key_name,
-    provider_label,
 )
 from .properties import CONTEXT_SCOPE_ITEMS
 
@@ -252,10 +251,6 @@ def resolve_provider_choice(
     if preferences is None:
         return PROVIDER_OPENAI
     return preferences.provider_choice
-
-
-def resolve_provider_label(preferences: AIASSISTANT_AP_preferences | None) -> str:
-    return provider_label(resolve_provider_choice(preferences))
 
 
 def resolve_selected_model(preferences: AIASSISTANT_AP_preferences | None) -> str:

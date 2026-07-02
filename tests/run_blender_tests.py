@@ -169,8 +169,14 @@ assert operation_plan.operations[0].type is OperationType.CREATE_PRIMITIVE
 objects = cast(Any, bpy.data.objects)
 cube = cast(Any, objects["Cube"])
 material = bpy.data.materials.new("ContextMaterial")
+material.use_nodes = True
 cube.data.materials.clear()
 cube.data.materials.append(material)
+cube.data.uv_layers.new(name="ContextUV")
+cube.vertex_groups.new(name="ContextGroup")
+cube.shape_key_add(name="Basis")
+cube.shape_key_add(name="ContextSmile")
+cube.modifiers.new("Context Weighted Normal", "WEIGHTED_NORMAL")
 cube["private_path"] = "C:\\private\\source.blend"
 unused_material = bpy.data.materials.new("UnrelatedMaterial")
 unused_collection = bpy.data.collections.new("UnrelatedCollection")
@@ -189,13 +195,31 @@ snapshot = read_scene_context(
 scene_context = snapshot.context
 assert scene_context.scoped_object_count == 1
 assert len(scene_context.detailed_objects) == 1
-assert scene_context.detailed_objects[0].name == "Cube"
-assert scene_context.detailed_objects[0].data["vertex_count"] == 8
-assert scene_context.detailed_objects[0].custom_properties == {}
+detailed_object = scene_context.detailed_objects[0]
+object_data = detailed_object.data
+uv_maps = cast(list[Any], object_data["uv_maps"])
+vertex_groups = cast(list[Any], object_data["vertex_groups"])
+shape_keys = cast(list[Any], object_data["shape_keys"])
+modifier_stack = cast(list[dict[str, Any]], object_data["modifier_stack"])
+assert detailed_object.name == "Cube"
+assert object_data["vertex_count"] == 8
+assert cast(int, object_data["uv_map_count"]) >= 1
+assert "ContextUV" in uv_maps
+assert object_data["active_uv_map"] is not None
+assert object_data["material_slot_count"] == 1
+assert vertex_groups == ["ContextGroup"]
+assert object_data["shape_key_count"] == 2
+assert "ContextSmile" in shape_keys
+assert modifier_stack[0]["type"] == "weighted_normal"
+assert detailed_object.custom_properties == {}
 assert scene_context.omissions.file_paths == 1
 material_names = [item.name for item in scene_context.materials]
 collection_names = [item.name for item in scene_context.collections]
 assert material_names == ["ContextMaterial"], material_names
+node_summary = scene_context.materials[0].node_summary
+assert cast(int, node_summary["node_count"]) >= 2
+assert node_summary["has_principled_bsdf"] is True
+assert node_summary["has_material_output"] is True
 assert "UnrelatedMaterial" not in material_names
 assert "UnrelatedCollection" not in collection_names
 assert scene_context.active_object_id is not None
