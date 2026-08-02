@@ -13,15 +13,25 @@ import fastjsonschema
 from .limits import DEFAULT_OPERATION_LIMITS, OperationLimits
 from .models import Operation, OperationPlan, OperationType, PlanStatus
 from .registries import (
+    ADVANCED_PROCEDURAL_PATTERNS,
     GEOMETRY_NODE_GROUP_TEMPLATES,
     MATERIAL_FAMILIES,
     PBR_NON_COLOR_ROLES,
     PBR_TEXTURE_ROLES,
+    PROCEDURAL_NODE_SET_MAPPINGS,
     PROCEDURAL_PATTERNS,
     SHADER_GRAPH_TEMPLATES,
+    SHADER_LAYER_BLEND_MODES,
+    SHADER_LAYER_MASK_KINDS,
+    SHADER_LAYER_TYPES,
+    SHADER_LAYOUT_STYLES,
     SHADER_MIX_CHAIN_TEMPLATES,
     SHADER_NODE_TYPES,
+    SHADER_PREVIEW_MODES,
+    SHADER_SOCKET_COMPATIBILITY,
+    SHADER_SOCKET_FAMILIES,
     SHADER_SOCKET_NAMES,
+    SHADING_REPAIR_MODES,
     TEXTURE_BAKE_PASS_TYPES,
     TEXTURE_BLEND_MODES,
 )
@@ -45,14 +55,50 @@ _RESULT_KINDS = {
     OperationType.CREATE_SHADER_COLOR_RAMP: "shader_node",
     OperationType.CREATE_SHADER_MIX_CHAIN: "shader_node",
     OperationType.CREATE_SHADER_GRAPH_TEMPLATE: "shader_node",
+    OperationType.CREATE_LAYERED_SHADER_MATERIAL: "material",
+    OperationType.ADD_SHADER_LAYER: "shader_layer",
+    OperationType.CREATE_PROCEDURAL_PATTERN_NODE_SET: "shader_node",
+    OperationType.CREATE_EDGE_WEAR_SHADER: "shader_node",
+    OperationType.CREATE_TRIPLANAR_MAPPING_SETUP: "shader_node",
+    OperationType.CREATE_OBJECT_SPACE_GRADIENT_SHADER: "shader_node",
+    OperationType.CREATE_CURVATURE_STYLE_MASK: "shader_node",
+    OperationType.EXTRACT_MATERIAL_PALETTE_FROM_IMAGE: "material_palette",
+    OperationType.CREATE_MATERIAL_FROM_REFERENCE_IMAGE: "material",
+    OperationType.CREATE_LOOKDEV_PREVIEW: "image",
+    OperationType.CREATE_GLASS_MATERIAL: "material",
+    OperationType.CREATE_TRANSLUCENT_MATERIAL: "material",
+    OperationType.CREATE_EMISSION_MATERIAL: "material",
+    OperationType.CREATE_VOLUME_MATERIAL: "material",
+    OperationType.CREATE_TOON_SHADER_MATERIAL: "material",
+    OperationType.CREATE_ANISOTROPIC_MATERIAL: "material",
+    OperationType.CREATE_MATERIAL_VARIANT: "material",
+    OperationType.CREATE_SHADER_COMPARISON_PREVIEW: "image",
     OperationType.LOAD_IMAGE_TEXTURE: "image",
     OperationType.CREATE_IMAGE_TEXTURE_NODE: "shader_node",
+    OperationType.INSPECT_UV_MAP: "uv_report",
+    OperationType.CREATE_UV_DIAGNOSTIC_REPORT: "uv_report",
+    OperationType.CREATE_UV_OVERLAP_PREVIEW: "image",
+    OperationType.CREATE_UV_STRETCH_PREVIEW: "image",
+    OperationType.MARK_UV_SEAMS_BY_ANGLE: "uv_seam_set",
+    OperationType.MARK_UV_SEAMS_BY_MATERIAL: "uv_seam_set",
+    OperationType.MARK_UV_SEAMS_BY_EDGE_SET: "uv_seam_set",
+    OperationType.CREATE_UV_ISLANDS_FROM_SEAMS: "uv_island_set",
+    OperationType.SELECT_UV_ISLANDS_BY_MATERIAL: "uv_island_set",
+    OperationType.VALIDATE_UDIM_LAYOUT: "uv_report",
+    OperationType.VALIDATE_UV_MAP: "uv_report",
+    OperationType.CREATE_TEXTURE_ATLAS_LAYOUT: "uv_atlas",
+    OperationType.BAKE_UV_LAYOUT_GUIDE_IMAGE: "image",
+    OperationType.CREATE_UV_GRID_TEST_MATERIAL: "material",
+    OperationType.CREATE_UV_MAP_VARIANT: "uv_variant",
+    OperationType.CREATE_UV_COMPARISON_PREVIEW: "image",
     OperationType.IMPORT_PBR_TEXTURE_SET: "texture_set",
     OperationType.CREATE_PBR_MATERIAL: "material",
+    OperationType.GENERATE_IMAGE_ASSET: "image",
     OperationType.GENERATE_TEXTURE_IMAGE: "image",
     OperationType.CREATE_PAINT_IMAGE: "image",
     OperationType.CREATE_BAKE_TARGET_IMAGE: "image",
     OperationType.ASSIGN_PAINT_SLOT: "shader_node",
+    OperationType.APPLY_IMAGE_TO_MATERIAL: "shader_node",
     OperationType.ATTACH_GENERATED_TEXTURE: "shader_node",
     OperationType.ASSIGN_BAKED_TEXTURE: "shader_node",
     OperationType.CREATE_GENERATED_GEOMETRY_COPY: "object",
@@ -63,6 +109,7 @@ _RESULT_KINDS = {
     OperationType.CREATE_SCULPT_REGION_FROM_MATERIAL: "sculpt_region",
     OperationType.CREATE_SCULPT_REGION_FROM_VERTEX_GROUP: "sculpt_region",
     OperationType.CREATE_SCULPT_MASK: "sculpt_mask",
+    OperationType.COMBINE_SCULPT_MASKS: "sculpt_mask",
     OperationType.CREATE_FACE_SET_FROM_MATERIAL: "face_set",
     OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: "face_set",
     OperationType.CREATE_PREVIEW_IMAGE: "image",
@@ -71,6 +118,16 @@ _RESULT_KINDS = {
 
 _IMAGE_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".exr"}
 _SAVE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+_UV_VARIANT_REFERENCE_OPERATIONS = {
+    OperationType.TAG_UV_VARIANT,
+    OperationType.CREATE_UV_COMPARISON_PREVIEW,
+    OperationType.ACCEPT_UV_VARIANT,
+    OperationType.REJECT_UV_VARIANT,
+}
+_UV_BOUNDS_FIELD_PAIRS = (
+    ("bounds_min", "bounds_max"),
+    ("region_min_uv", "region_max_uv"),
+)
 
 
 class OperationContractError(ValueError):
@@ -151,6 +208,50 @@ def _schema_error_hint(data: Mapping[str, Any]) -> str | None:
             pattern = operation.get("pattern")
             if pattern not in PROCEDURAL_PATTERNS:
                 return "CREATE_PROCEDURAL_MATERIAL pattern is not supported."
+        if raw_type == OperationType.ADD_SHADER_LAYER.value:
+            if operation.get("layer_type") not in SHADER_LAYER_TYPES:
+                return "ADD_SHADER_LAYER layer_type is not supported."
+            if operation.get("blend_mode") not in SHADER_LAYER_BLEND_MODES:
+                return "ADD_SHADER_LAYER blend_mode is not supported."
+        if raw_type == OperationType.SET_SHADER_LAYER_MASK.value:
+            mask_source = operation.get("mask_source")
+            if isinstance(mask_source, Mapping):
+                if mask_source.get("kind") not in SHADER_LAYER_MASK_KINDS:
+                    return "SET_SHADER_LAYER_MASK mask_source.kind is not supported."
+                pattern = mask_source.get("pattern")
+                if pattern is not None and pattern not in {
+                    *PROCEDURAL_PATTERNS,
+                    *ADVANCED_PROCEDURAL_PATTERNS,
+                }:
+                    return "SET_SHADER_LAYER_MASK pattern is not supported."
+        if (
+            raw_type == OperationType.CREATE_PROCEDURAL_PATTERN_NODE_SET.value
+            and operation.get("pattern") not in ADVANCED_PROCEDURAL_PATTERNS
+        ):
+            return "CREATE_PROCEDURAL_PATTERN_NODE_SET pattern is not supported."
+        if raw_type in {
+            OperationType.CREATE_PROCEDURAL_PATTERN_NODE_SET.value,
+            OperationType.CREATE_EDGE_WEAR_SHADER.value,
+            OperationType.CREATE_TRIPLANAR_MAPPING_SETUP.value,
+            OperationType.CREATE_OBJECT_SPACE_GRADIENT_SHADER.value,
+            OperationType.CREATE_CURVATURE_STYLE_MASK.value,
+        } and operation.get("mapping") not in PROCEDURAL_NODE_SET_MAPPINGS:
+            return f"{raw_type} mapping is not supported."
+        if raw_type in {
+            OperationType.REMOVE_UNUSED_ASSISTANT_SHADER_NODES.value,
+            OperationType.NORMALIZE_SHADER_NODE_LAYOUT.value,
+            OperationType.VALIDATE_SHADER_COMPATIBILITY.value,
+            OperationType.REPAIR_BROKEN_SHADER_LINKS.value,
+        }:
+            if operation.get("repair_mode") not in SHADING_REPAIR_MODES:
+                return f"{raw_type} repair_mode is not supported."
+            if operation.get("layout_style") not in SHADER_LAYOUT_STYLES:
+                return f"{raw_type} layout_style is not supported."
+        if (
+            raw_type == OperationType.CREATE_SHADER_COMPARISON_PREVIEW.value
+            and operation.get("mode") not in SHADER_PREVIEW_MODES
+        ):
+            return "CREATE_SHADER_COMPARISON_PREVIEW mode is not supported."
         if raw_type == OperationType.CREATE_SHADER_NODE.value:
             node_type = operation.get("node_type")
             if node_type not in SHADER_NODE_TYPES:
@@ -326,16 +427,79 @@ def _validate_operation_semantics(
             )
 
         if operation_type in {
+            OperationType.CONNECT_SHADER_NODES,
+            OperationType.DISCONNECT_SHADER_LINK,
+        }:
+            _validate_shader_socket_pair(
+                operation_type,
+                str(operation["from_socket"]),
+                str(operation["to_socket"]),
+            )
+
+        if operation_type in {
             OperationType.CREATE_SHADER_COLOR_RAMP,
             OperationType.SET_SHADER_COLOR_RAMP,
         }:
             _validate_color_ramp_stops(operation["stops"])
+
+        if operation_type is OperationType.SET_SHADER_LAYER_MASK:
+            _validate_shader_layer_mask_source(operation["mask_source"])
+
+        if operation_type is OperationType.REORDER_SHADER_LAYERS:
+            layer_order = operation["layer_order"]
+            if len(layer_order) != len(set(layer_order)):
+                raise OperationContractError(
+                    "REORDER_SHADER_LAYERS layer_order entries must be unique."
+                )
+
+        if operation_type is OperationType.CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS:
+            material_ids = operation["material_ids"]
+            if len(material_ids) != len(set(material_ids)):
+                raise OperationContractError(
+                    "CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS material_ids must be unique."
+                )
+            if operation["canonical_material_id"] not in material_ids:
+                raise OperationContractError(
+                    "CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS canonical_material_id "
+                    "must be one of material_ids."
+                )
+
+        if operation_type is OperationType.MATCH_MATERIAL_TO_REFERENCE and not any(
+            bool(operation[field])
+            for field in ("match_color", "match_roughness", "match_pattern")
+        ):
+            raise OperationContractError(
+                "MATCH_MATERIAL_TO_REFERENCE must match at least one material property."
+            )
+
+        if (
+            operation_type is OperationType.ACCEPT_MATERIAL_VARIANT
+            and operation["variant_id"] == operation["replace_material_id"]
+        ):
+            raise OperationContractError(
+                "ACCEPT_MATERIAL_VARIANT variant_id and replace_material_id must differ."
+            )
+
+        if operation_type in {
+            OperationType.EXTRACT_MATERIAL_PALETTE_FROM_IMAGE,
+            OperationType.CREATE_MATERIAL_FROM_REFERENCE_IMAGE,
+        }:
+            _validate_reference_image_source(str(operation["source"]), operation_type.value)
+
+        if operation_type is OperationType.MATCH_MATERIAL_TO_REFERENCE:
+            _validate_reference_image_source(
+                str(operation["reference_source"]),
+                operation_type.value,
+            )
 
         if operation_type is OperationType.SCULPT_SMOOTH_REGION:
             _validate_sculpt_region(operation["region"])
 
         if operation_type is OperationType.APPLY_SCULPT_BRUSH_STROKES:
             _validate_sculpt_strokes(operation["strokes"])
+
+        if operation_type is OperationType.COMBINE_SCULPT_MASKS:
+            _validate_sculpt_mask_combine(operation)
 
         if operation_type is OperationType.CREATE_DISPLACED_COPY:
             direction = operation["direction"]
@@ -412,6 +576,56 @@ def _validate_operation_semantics(
                     "RENAME_OBJECTS cannot rename the same target more than once."
                 )
 
+        if operation_type in {
+            OperationType.ALIGN_UV_ISLANDS,
+            OperationType.DISTRIBUTE_UV_ISLANDS,
+            OperationType.SCALE_UV_ISLANDS_TO_BOUNDS,
+            OperationType.FIT_UV_ISLANDS_TO_IMAGE_REGION,
+        }:
+            _validate_uv_bounds(operation, operation_type.value)
+
+        if operation_type is OperationType.ASSIGN_ATLAS_TEXTURE_REGIONS:
+            for index, assignment in enumerate(operation["assignments"]):
+                _validate_uv_bounds(
+                    assignment,
+                    f"ASSIGN_ATLAS_TEXTURE_REGIONS assignment {index}",
+                )
+
+        if operation_type is OperationType.VALIDATE_UDIM_LAYOUT:
+            min_tile = operation["allowed_tile_min"]
+            max_tile = operation["allowed_tile_max"]
+            if min_tile[0] > max_tile[0] or min_tile[1] > max_tile[1]:
+                raise OperationContractError(
+                    "VALIDATE_UDIM_LAYOUT allowed_tile_min must not exceed allowed_tile_max."
+                )
+
+        if operation_type is OperationType.MERGE_DUPLICATE_UV_MAPS:
+            source_names = operation["source_uv_map_names"]
+            if len(source_names) != len(set(source_names)):
+                raise OperationContractError(
+                    "MERGE_DUPLICATE_UV_MAPS source_uv_map_names must be unique."
+                )
+            if operation["destination_uv_map_name"] in source_names:
+                raise OperationContractError(
+                    "MERGE_DUPLICATE_UV_MAPS destination cannot also be a source."
+                )
+
+        if (
+            operation_type is OperationType.CREATE_UV_MAP_VARIANT
+            and operation["source_uv_map_name"] == operation["variant_uv_map_name"]
+        ):
+            raise OperationContractError(
+                "CREATE_UV_MAP_VARIANT source and variant UV map names must differ."
+            )
+
+        if (
+            operation_type is OperationType.SPHERE_PROJECT_UV_MAP
+            and operation["axis"] == operation["pole_axis"]
+        ):
+            raise OperationContractError(
+                "SPHERE_PROJECT_UV_MAP axis and pole_axis must differ."
+            )
+
         result_kind = _RESULT_KINDS.get(operation_type)
         if result_kind is not None:
             available_results[operation["operation_id"]] = result_kind
@@ -422,6 +636,7 @@ def _validate_result_references(
     available_results: Mapping[str, str],
 ) -> None:
     references: list[tuple[str, str]] = []
+    operation_type = OperationType(str(operation["type"]))
     references.extend((target_id, "object") for target_id in operation.get("target_ids", []))
     references.extend(
         (rename["target_id"], "object") for rename in operation.get("renames", [])
@@ -442,6 +657,67 @@ def _validate_result_references(
     material_id = operation.get("material_id")
     if isinstance(material_id, str):
         references.append((material_id, "material"))
+
+    for key in ("source_material_id", "replace_material_id", "canonical_material_id"):
+        referenced_material_id = operation.get(key)
+        if isinstance(referenced_material_id, str):
+            references.append((referenced_material_id, "material"))
+
+    variant_id = operation.get("variant_id")
+    if isinstance(variant_id, str):
+        expected_variant_kind = (
+            "uv_variant"
+            if operation_type in _UV_VARIANT_REFERENCE_OPERATIONS
+            else "material"
+        )
+        references.append((variant_id, expected_variant_kind))
+
+    material_ids = operation.get("material_ids")
+    if isinstance(material_ids, list):
+        references.extend((item, "material") for item in material_ids if isinstance(item, str))
+
+    seam_set_id = operation.get("seam_set_id")
+    if isinstance(seam_set_id, str):
+        references.append((seam_set_id, "uv_seam_set"))
+
+    island_set_id = operation.get("island_set_id")
+    if isinstance(island_set_id, str):
+        references.append((island_set_id, "uv_island_set"))
+
+    atlas_id = operation.get("atlas_id")
+    if isinstance(atlas_id, str):
+        references.append((atlas_id, "uv_atlas"))
+
+    assignments = operation.get("assignments")
+    if isinstance(assignments, list):
+        for assignment in assignments:
+            if isinstance(assignment, Mapping):
+                assignment_material_id = assignment.get("material_id")
+                if isinstance(assignment_material_id, str):
+                    references.append((assignment_material_id, "material"))
+
+    layer_id = operation.get("layer_id")
+    if isinstance(layer_id, str):
+        references.append((layer_id, "shader_layer"))
+
+    layer_order = operation.get("layer_order")
+    if isinstance(layer_order, list):
+        references.extend((item, "shader_layer") for item in layer_order if isinstance(item, str))
+
+    palette_id = operation.get("palette_id")
+    if isinstance(palette_id, str):
+        references.append((palette_id, "material_palette"))
+
+    mask_source = operation.get("mask_source")
+    if isinstance(mask_source, Mapping):
+        image_id = mask_source.get("image_id")
+        if isinstance(image_id, str):
+            references.append((image_id, "image"))
+
+    for key in ("source", "reference_source"):
+        image_source = operation.get(key)
+        if isinstance(image_source, str) and image_source.startswith(RESULT_REFERENCE_PREFIX):
+            references.append((image_source, "image"))
 
     region = operation.get("region")
     if isinstance(region, Mapping):
@@ -549,6 +825,26 @@ def _validate_load_image_texture_source(source: str) -> None:
         )
 
 
+def _validate_reference_image_source(source: str, operation_type: str) -> None:
+    if source.startswith(RESULT_REFERENCE_PREFIX):
+        return
+    normalized = source.lower()
+    if "://" in normalized:
+        parsed = urlparse(source)
+        if parsed.scheme.lower() != "https":
+            raise OperationContractError(f"{operation_type} URL sources must use HTTPS.")
+        if not parsed.netloc:
+            raise OperationContractError(f"{operation_type} URL sources require a host.")
+        suffix = Path(unquote(parsed.path)).suffix.lower()
+    else:
+        suffix = Path(source).suffix.lower()
+    if suffix not in _IMAGE_TEXTURE_SUFFIXES:
+        suffixes = ", ".join(sorted(_IMAGE_TEXTURE_SUFFIXES))
+        raise OperationContractError(
+            f"{operation_type} source must end with one of: {suffixes}."
+        )
+
+
 def _validate_pbr_texture_set(textures: list[Mapping[str, Any]]) -> None:
     roles = [str(texture["role"]) for texture in textures]
     if len(roles) != len(set(roles)):
@@ -589,6 +885,20 @@ def _validate_color_ramp_stops(stops: list[Mapping[str, Any]]) -> None:
         raise OperationContractError("Color ramp stop positions must be unique.")
     if positions != sorted(positions):
         raise OperationContractError("Color ramp stop positions must be sorted.")
+
+
+def _validate_shader_layer_mask_source(mask_source: Mapping[str, Any]) -> None:
+    kind = str(mask_source["kind"])
+    if kind == "image" and not isinstance(mask_source.get("image_id"), str):
+        raise OperationContractError("SET_SHADER_LAYER_MASK image masks need image_id.")
+    if kind == "uv_map" and not isinstance(mask_source.get("uv_map_name"), str):
+        raise OperationContractError("SET_SHADER_LAYER_MASK uv_map masks need uv_map_name.")
+    if kind == "vertex_group" and not isinstance(mask_source.get("vertex_group"), str):
+        raise OperationContractError(
+            "SET_SHADER_LAYER_MASK vertex_group masks need vertex_group."
+        )
+    if kind == "procedural" and not isinstance(mask_source.get("pattern"), str):
+        raise OperationContractError("SET_SHADER_LAYER_MASK procedural masks need pattern.")
 
 
 def _validate_generated_texture_output_path(filepath: str) -> None:
@@ -633,6 +943,18 @@ def _validate_texture_fill_region(region: Mapping[str, Any]) -> None:
         raise OperationContractError("FILL_TEXTURE_REGION rect min_uv must be below max_uv.")
 
 
+def _validate_uv_bounds(operation: Mapping[str, Any], label: str) -> None:
+    for min_field, max_field in _UV_BOUNDS_FIELD_PAIRS:
+        if min_field not in operation or max_field not in operation:
+            continue
+        min_uv = operation[min_field]
+        max_uv = operation[max_field]
+        if min_uv[0] >= max_uv[0] or min_uv[1] >= max_uv[1]:
+            raise OperationContractError(
+                f"{label} {min_field} must be below {max_field}."
+            )
+
+
 def _validate_sculpt_region(region: Mapping[str, Any]) -> None:
     kind = region["kind"]
     if kind == "material" and not isinstance(region.get("material_id"), str):
@@ -655,6 +977,35 @@ def _validate_sculpt_strokes(strokes: list[Mapping[str, Any]]) -> None:
             raise OperationContractError(
                 f"APPLY_SCULPT_BRUSH_STROKES stroke {index} has a zero normal."
             )
+
+
+def _validate_shader_socket_pair(
+    operation_type: OperationType,
+    from_socket: str,
+    to_socket: str,
+) -> None:
+    from_family = SHADER_SOCKET_FAMILIES.get(from_socket)
+    to_family = SHADER_SOCKET_FAMILIES.get(to_socket)
+    if from_family is None or to_family is None:
+        return
+    compatible_targets = SHADER_SOCKET_COMPATIBILITY.get(from_family, ())
+    if to_family not in compatible_targets:
+        raise OperationContractError(
+            f"{operation_type.value} cannot connect {from_socket!r} "
+            f"({from_family}) to {to_socket!r} ({to_family})."
+        )
+
+
+def _validate_sculpt_mask_combine(operation: Mapping[str, Any]) -> None:
+    source = str(operation["source_mask_name"])
+    target = str(operation["target_mask_name"])
+    result = str(operation["result_mask_name"])
+    if source == target:
+        raise OperationContractError("COMBINE_SCULPT_MASKS source and target masks must differ.")
+    if result in {source, target}:
+        raise OperationContractError(
+            "COMBINE_SCULPT_MASKS result mask must be a new mask name."
+        )
 
 
 def _reject_non_finite_numbers(value: Any, path: str = "plan") -> None:

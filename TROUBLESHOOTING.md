@@ -2,7 +2,7 @@
 
 ## Extension Will Not Install
 
-Confirm that the selected file is the unextracted `blender_ai_assistant-0.1.4.zip` and that Blender is
+Confirm that the selected file is the unextracted `blender_ai_assistant-1.5.0.zip` and that Blender is
 5.1.x. Older Blender versions are rejected by the manifest. If Blender reports invalid metadata,
 download or rebuild the archive rather than editing its contents.
 
@@ -31,6 +31,10 @@ HTTP 429 and transient 5xx responses receive a bounded retry. If the final attem
 retry manually. The UI can include a provider request ID in technical details; retain that ID when
 investigating provider issues, but never share the API key.
 
+OpenAI HTTP 500 errors can also appear when a request asks for a very large structured response.
+After one manual retry, reduce `Maximum Output Tokens`, reduce `Operations per Plan`, or split the
+request into smaller batches before retrying.
+
 ## Timeout or Network Error
 
 The UI now distinguishes request timeout, TLS, and connection failures. The default timeout is 180
@@ -50,11 +54,10 @@ than applying partial guesses. One semantic repair call may occur automatically.
 ## Request Exceeds Plan Limits
 
 Expand `Plan Limits` in the AI Assistant or open the extension preferences. Increase the selected
-value only as far as needed. Defaults are 20 operations per plan, 100 existing targets per operation,
-and 100 total duplicate outputs. The selectable hard maxima are 100 operations, 500 targets, and
-1,000 duplicate outputs. Duplicate output equals the number of targets multiplied by the requested
-copy count. Plans affecting more than 25 objects require Global Undo, a recovery point, and a second
-confirmation.
+value only as far as needed. Defaults and selectable hard maxima are 1,000 operations per plan,
+1,000 existing targets per operation, and 10,000 total duplicate outputs. Duplicate output equals the
+number of targets multiplied by the requested copy count. Plans affecting more than 25 objects
+require Global Undo, a recovery point, and a second confirmation.
 
 ## Plan Became Stale
 

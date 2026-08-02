@@ -1,6 +1,7 @@
 import json
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -29,8 +30,14 @@ from extension.operations.registries import (
     MATERIAL_FAMILIES,
     PBR_TEXTURE_ROLES,
     PROCEDURAL_PATTERNS,
+    SHADER_NODE_COMPATIBILITY,
     SHADER_NODE_TYPES,
+    SHADER_SOCKET_COMPATIBILITY,
+    SHADER_SOCKET_FAMILIES,
+    SHADER_SOCKET_NAMES,
     TEXTURE_BAKE_PASS_TYPES,
+    TEXTURE_EXTENSION_MODES,
+    TEXTURE_PROJECTION_MODES,
 )
 
 SNAPSHOT_ID = "a" * 32
@@ -278,16 +285,16 @@ def test_default_limits_match_the_controlled_contract() -> None:
     ) == DEFAULT_OPERATION_LIMITS
 
 
-def test_hard_limits_allow_values_above_the_safe_defaults() -> None:
+def test_hard_limits_accept_the_configured_large_plan_caps() -> None:
     limits = OperationLimits(
         max_operations_per_plan=HARD_MAX_OPERATIONS_PER_PLAN,
         max_targets_per_operation=HARD_MAX_TARGETS_PER_OPERATION,
         max_duplicate_objects=HARD_MAX_DUPLICATE_OBJECTS,
     )
 
-    assert limits.max_operations_per_plan > DEFAULT_MAX_OPERATIONS_PER_PLAN
-    assert limits.max_targets_per_operation > DEFAULT_MAX_TARGETS_PER_OPERATION
-    assert limits.max_duplicate_objects > DEFAULT_MAX_DUPLICATE_OBJECTS
+    assert limits.max_operations_per_plan == 1_000
+    assert limits.max_targets_per_operation == 1_000
+    assert limits.max_duplicate_objects == 10_000
 
 
 @pytest.mark.parametrize(
@@ -355,6 +362,7 @@ def test_operation_schema_uses_shared_operation_registries() -> None:
     node_schema = OPERATION_SCHEMAS[OperationType.CREATE_SHADER_NODE]
     pbr_schema = OPERATION_SCHEMAS[OperationType.IMPORT_PBR_TEXTURE_SET]
     generated_schema = OPERATION_SCHEMAS[OperationType.GENERATE_TEXTURE_IMAGE]
+    image_apply_schema = OPERATION_SCHEMAS[OperationType.APPLY_IMAGE_TO_MATERIAL]
     bake_schema = OPERATION_SCHEMAS[OperationType.BAKE_TEXTURE_PASS]
 
     assert tuple(material_schema["properties"]["material_family"]["enum"]) == MATERIAL_FAMILIES
@@ -365,7 +373,27 @@ def test_operation_schema_uses_shared_operation_registries() -> None:
         == PBR_TEXTURE_ROLES
     )
     assert tuple(generated_schema["properties"]["pattern"]["enum"]) == GENERATED_TEXTURE_PATTERNS
+    assert (
+        tuple(image_apply_schema["properties"]["projection"]["enum"])
+        == TEXTURE_PROJECTION_MODES
+    )
+    assert tuple(image_apply_schema["properties"]["extension"]["enum"]) == TEXTURE_EXTENSION_MODES
     assert tuple(bake_schema["properties"]["pass_type"]["enum"]) == TEXTURE_BAKE_PASS_TYPES
+
+
+def test_shader_compatibility_registry_covers_allowed_nodes_and_sockets() -> None:
+    assert set(SHADER_NODE_TYPES).issubset(SHADER_NODE_COMPATIBILITY)
+    assert set(SHADER_SOCKET_NAMES) == set(SHADER_SOCKET_FAMILIES)
+    assert set(SHADER_SOCKET_FAMILIES.values()).issubset(SHADER_SOCKET_COMPATIBILITY)
+
+    for node_type in SHADER_NODE_TYPES:
+        metadata = SHADER_NODE_COMPATIBILITY[node_type]
+        assert metadata["category"]
+        input_sockets = cast(Mapping[str, str], metadata["inputs"])
+        output_sockets = cast(Mapping[str, str], metadata["outputs"])
+        for sockets in (input_sockets, output_sockets):
+            assert set(sockets).issubset(SHADER_SOCKET_NAMES)
+            assert set(sockets.values()).issubset(SHADER_SOCKET_COMPATIBILITY)
 
 
 def test_configured_target_limit_is_enforced_locally() -> None:
@@ -601,12 +629,15 @@ def test_duplicate_blast_radius_is_bounded() -> None:
         "operation_id": "duplicate_cubes",
         "type": "DUPLICATE_OBJECTS",
         "target_ids": ["obj_0001", "obj_0002"],
-        "count": 51,
+        "count": (HARD_MAX_DUPLICATE_OBJECTS // 2) + 1,
         "offset": [1.0, 0.0, 0.0],
         "name_prefix": None,
     }
 
-    with pytest.raises(OperationContractError, match="more than 100"):
+    with pytest.raises(
+        OperationContractError,
+        match=f"more than {HARD_MAX_DUPLICATE_OBJECTS}",
+    ):
         validate_operation_plan(ready_plan(operation))
 
 
@@ -827,6 +858,16 @@ def test_tracks_d_to_f_image_generation_paint_and_bake_validate_as_a_chain() -> 
         "color_space": "sRGB",
         "pack": True,
     }
+    generate_image = {
+        "operation_id": "generate_image",
+        "type": "GENERATE_IMAGE_ASSET",
+        "prompt": "clean product poster image with blue ceramic pattern",
+        "image_name": "Generated Image",
+        "width": 64,
+        "height": 64,
+        "color_space": "sRGB",
+        "pack": True,
+    }
     save = {
         "operation_id": "save_generated",
         "type": "SAVE_GENERATED_TEXTURE",
@@ -842,6 +883,17 @@ def test_tracks_d_to_f_image_generation_paint_and_bake_validate_as_a_chain() -> 
         "image_id": "result:generate_texture",
         "node_label": "AI Generated",
         "connect_to": "Base Color",
+        "uv_map_name": None,
+    }
+    apply_image = {
+        "operation_id": "apply_image",
+        "type": "APPLY_IMAGE_TO_MATERIAL",
+        "material_id": "result:create_red_material",
+        "image_id": "result:generate_image",
+        "node_label": "AI Generated Poster",
+        "connect_to": "Base Color",
+        "projection": "FLAT",
+        "extension": "EXTEND",
         "uv_map_name": None,
     }
     paint_image = {
@@ -922,8 +974,10 @@ def test_tracks_d_to_f_image_generation_paint_and_bake_validate_as_a_chain() -> 
             create_material,
             create_uv,
             generate,
+            generate_image,
             save,
             attach,
+            apply_image,
             paint_image,
             paint_slot,
             paint,
@@ -1000,6 +1054,63 @@ def test_tracks_g_to_k_geometry_mesh_sculpt_topology_and_preview_validate() -> N
         "mask_name": "Head Mask",
         "strength": 0.8,
     }
+    blur_mask = {
+        "operation_id": "blur_mask",
+        "type": "BLUR_SCULPT_MASK",
+        "target_id": "obj_0001",
+        "mask_name": "Head Mask",
+        "iterations": 1,
+        "strength": 0.5,
+    }
+    sharpen_mask = {
+        "operation_id": "sharpen_mask",
+        "type": "SHARPEN_SCULPT_MASK",
+        "target_id": "obj_0001",
+        "mask_name": "Head Mask",
+        "iterations": 1,
+        "strength": 0.5,
+    }
+    grow_mask = {
+        "operation_id": "grow_mask",
+        "type": "GROW_SCULPT_MASK",
+        "target_id": "obj_0001",
+        "mask_name": "Head Mask",
+        "iterations": 1,
+        "strength": 0.5,
+    }
+    shrink_mask = {
+        "operation_id": "shrink_mask",
+        "type": "SHRINK_SCULPT_MASK",
+        "target_id": "obj_0001",
+        "mask_name": "Head Mask",
+        "iterations": 1,
+        "strength": 0.5,
+    }
+    invert_mask = {
+        "operation_id": "invert_mask",
+        "type": "INVERT_SCULPT_MASK",
+        "target_id": "obj_0001",
+        "mask_name": "Head Mask",
+        "iterations": 1,
+        "strength": 1.0,
+    }
+    combine_masks = {
+        "operation_id": "combine_masks",
+        "type": "COMBINE_SCULPT_MASKS",
+        "target_id": "obj_0001",
+        "source_mask_name": "Head",
+        "target_mask_name": "Head Mask",
+        "result_mask_name": "Combined Head Mask",
+        "combine_mode": "add",
+    }
+    clear_mask = {
+        "operation_id": "clear_mask",
+        "type": "CLEAR_SCULPT_MASK",
+        "target_id": "obj_0001",
+        "mask_name": "Head Mask",
+        "iterations": 1,
+        "strength": 1.0,
+    }
     sculpt_apply = {
         "operation_id": "sculpt_apply",
         "type": "APPLY_SCULPT_REGION_OPERATION",
@@ -1045,6 +1156,13 @@ def test_tracks_g_to_k_geometry_mesh_sculpt_topology_and_preview_validate() -> N
             replace,
             sculpt_region,
             sculpt_mask,
+            blur_mask,
+            sharpen_mask,
+            grow_mask,
+            shrink_mask,
+            invert_mask,
+            combine_masks,
+            clear_mask,
             sculpt_apply,
             multires,
             shape_key,
@@ -1053,6 +1171,28 @@ def test_tracks_g_to_k_geometry_mesh_sculpt_topology_and_preview_validate() -> N
     )
 
     assert plan.operations[-1].type is OperationType.CREATE_PREVIEW_IMAGE
+
+
+def test_sculpt_mask_combine_requires_distinct_new_result_name() -> None:
+    same_source_and_target = {
+        "operation_id": "combine_masks",
+        "type": "COMBINE_SCULPT_MASKS",
+        "target_id": "obj_0001",
+        "source_mask_name": "Head",
+        "target_mask_name": "Head",
+        "result_mask_name": "Combined Head Mask",
+        "combine_mode": "add",
+    }
+    reused_result = {
+        **same_source_and_target,
+        "target_mask_name": "Face",
+        "result_mask_name": "Head",
+    }
+
+    with pytest.raises(OperationContractError, match="source and target masks must differ"):
+        validate_operation_plan(ready_plan(same_source_and_target))
+    with pytest.raises(OperationContractError, match="result mask must be a new mask name"):
+        validate_operation_plan(ready_plan(reused_result))
 
 
 def test_track_a_shader_graph_editing_validates_as_a_chain() -> None:
@@ -1124,6 +1264,44 @@ def test_track_a_shader_graph_editing_validates_as_a_chain() -> None:
     )
 
     assert plan.operations[-1].type is OperationType.VALIDATE_MATERIAL_OUTPUT
+
+
+def test_shader_socket_compatibility_allows_shader_output_to_surface() -> None:
+    operation = {
+        "operation_id": "connect_bsdf_output",
+        "type": "CONNECT_SHADER_NODES",
+        "material_id": "mat_0001",
+        "from_node": "principled_bsdf",
+        "from_socket": "BSDF",
+        "to_node": "material_output",
+        "to_socket": "Surface",
+    }
+
+    plan = validate_operation_plan(ready_plan(operation))
+
+    assert plan.operations[0].payload["from_socket"] == "BSDF"
+
+
+def test_shader_socket_compatibility_rejects_vector_to_surface() -> None:
+    create_coordinates = {
+        "operation_id": "create_coordinates",
+        "type": "CREATE_SHADER_NODE",
+        "material_id": "mat_0001",
+        "node_type": "ShaderNodeTexCoord",
+        "node_label": "AI Coordinates",
+    }
+    bad_connect = {
+        "operation_id": "connect_vector_to_surface",
+        "type": "CONNECT_SHADER_NODES",
+        "material_id": "mat_0001",
+        "from_node": "result:create_coordinates",
+        "from_socket": "Generated",
+        "to_node": "material_output",
+        "to_socket": "Surface",
+    }
+
+    with pytest.raises(OperationContractError, match="cannot connect 'Generated'"):
+        validate_operation_plan(ready_plan(create_coordinates, bad_connect))
 
 
 def test_color_ramp_positions_must_be_sorted() -> None:

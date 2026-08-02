@@ -70,6 +70,36 @@ Every operation requires a unique `operation_id` and an exact `type`. Unknown fi
 | `CREATE_SHADER_MIX_CHAIN` | material ID, chain label, template, colors, scale/detail/bump controls | Medium |
 | `CREATE_SHADER_GRAPH_TEMPLATE` | material ID, graph label, approved template, colors, strength, scale | Medium |
 | `VALIDATE_MATERIAL_OUTPUT` | material ID, repair flag | Medium |
+| `CREATE_LAYERED_SHADER_MATERIAL` | name, base family, base color, metallic, roughness, layer-stack label | Low |
+| `ADD_SHADER_LAYER` | material ID, layer type/name, blend mode, opacity, color, roughness delta, bump strength | Medium |
+| `SET_SHADER_LAYER_MASK` | material ID, layer result ID, mask source, invert flag, strength | Medium |
+| `REORDER_SHADER_LAYERS` | material ID, ordered assistant layer result IDs | Low |
+| `REMOVE_SHADER_LAYER` | material ID, assistant layer result ID | Medium |
+| `CREATE_PROCEDURAL_PATTERN_NODE_SET` | material ID, approved pattern, node-set label, mapping, scale, contrast, roughness/bump influence, seed | Medium |
+| `CREATE_EDGE_WEAR_SHADER` | material ID, node-set label, mapping, scale, contrast, roughness/bump influence, seed | Medium |
+| `CREATE_TRIPLANAR_MAPPING_SETUP` | material ID, node-set label, mapping, scale, contrast, roughness/bump influence, seed | Medium |
+| `CREATE_OBJECT_SPACE_GRADIENT_SHADER` | material ID, node-set label, mapping, scale, contrast, roughness/bump influence, seed | Medium |
+| `CREATE_CURVATURE_STYLE_MASK` | material ID, node-set label, mapping, scale, contrast, roughness/bump influence, seed | Medium |
+| `EXTRACT_MATERIAL_PALETTE_FROM_IMAGE` | explicit image source, palette name, max colors, roughness/metallic/pattern flags | High |
+| `CREATE_MATERIAL_FROM_REFERENCE_IMAGE` | image source, material name, palette result ID, template family, generated-texture flag | High |
+| `MATCH_MATERIAL_TO_REFERENCE` | material ID, image source, match flags, strength | Medium |
+| `CREATE_LOOKDEV_PREVIEW` | material ID, object ID, preview name, dimensions, pack flag | Medium |
+| `CREATE_GLASS_MATERIAL` | name, color, alpha, roughness, IOR, transmission, emission, density, anisotropy, strength | Low |
+| `CREATE_TRANSLUCENT_MATERIAL` | name, color, alpha, roughness, IOR, transmission, emission, density, anisotropy, strength | Low |
+| `CREATE_EMISSION_MATERIAL` | name, color, alpha, roughness, IOR, transmission, emission, density, anisotropy, strength | Low |
+| `CREATE_VOLUME_MATERIAL` | name, color, alpha, roughness, IOR, transmission, emission, density, anisotropy, strength | Medium |
+| `CREATE_TOON_SHADER_MATERIAL` | name, color, alpha, roughness, IOR, transmission, emission, density, anisotropy, strength | Low |
+| `CREATE_ANISOTROPIC_MATERIAL` | name, color, alpha, roughness, IOR, transmission, emission, density, anisotropy, strength | Low |
+| `REMOVE_UNUSED_ASSISTANT_SHADER_NODES` | material ID, assistant-owned flag, repair mode, layout style | Medium |
+| `CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS` | material IDs, canonical material ID, target IDs, assistant-owned flag | High |
+| `NORMALIZE_SHADER_NODE_LAYOUT` | material ID, assistant-owned flag, repair mode, layout style | Low |
+| `VALIDATE_SHADER_COMPATIBILITY` | material ID, assistant-owned flag, repair mode, layout style | Medium |
+| `REPAIR_BROKEN_SHADER_LINKS` | material ID, assistant-owned flag, repair mode, layout style | Medium |
+| `CREATE_MATERIAL_VARIANT` | source material ID, variant name/label, copy-textures flag | Medium |
+| `TAG_MATERIAL_VARIANT` | variant material ID, label, prompt summary | Low |
+| `CREATE_SHADER_COMPARISON_PREVIEW` | object ID, source material ID, variant ID, preview name, dimensions, mode, pack flag | Medium |
+| `ACCEPT_MATERIAL_VARIANT` | variant ID, target IDs, replace material ID | High |
+| `REJECT_MATERIAL_VARIANT` | variant ID | Medium |
 | `LOAD_IMAGE_TEXTURE` | local or HTTPS image source, image name, color space, max size | High |
 | `CREATE_IMAGE_TEXTURE_NODE` | material ID, image result ID, node label, target socket, projection, extension | Medium |
 | `SET_TEXTURE_MAPPING` | material ID, texture node reference, translation, rotation, scale, projection, extension | Medium |
@@ -77,11 +107,57 @@ Every operation requires a unique `operation_id` and an exact `type`. Unknown fi
 | `CREATE_UV_MAP` | target IDs, UV map name, active/render flags | Medium |
 | `UNWRAP_UV_MAP` | target IDs, UV map name, method, create/overwrite flags, margin | High |
 | `PACK_UV_ISLANDS` | target IDs, UV map name, margin, rotate flag | High |
+| `INSPECT_UV_MAP` | object ID, UV map name, island/material usage flags | Low |
+| `CREATE_UV_DIAGNOSTIC_REPORT` | object ID, UV map name, report name, enabled checks | Low |
+| `CREATE_UV_OVERLAP_PREVIEW` | object ID, UV map name, preview name, dimensions, pack flag | Medium |
+| `CREATE_UV_STRETCH_PREVIEW` | object ID, UV map name, preview name, dimensions, pack flag | Medium |
+| `MARK_UV_SEAMS_BY_ANGLE` | target IDs, seam-set name, angle threshold, sharp-edge and ownership flags | High |
+| `MARK_UV_SEAMS_BY_MATERIAL` | target IDs, material ID, seam-set name, ownership flag | High |
+| `MARK_UV_SEAMS_BY_EDGE_SET` | object ID, edge-set name, seam-set name, ownership flag | High |
+| `CLEAR_UV_SEAMS` | target IDs, seam-set name, ownership flag | High |
+| `CREATE_UV_ISLANDS_FROM_SEAMS` | target IDs, UV map name, seam-set result ID, create/overwrite flags | High |
+| `SMART_PROJECT_UV_MAP` | target IDs, UV map name, create/overwrite flags, margin, bounds flag, angle/area/aspect controls | High |
+| `CUBE_PROJECT_UV_MAP` | target IDs, UV map name, create/overwrite flags, margin, bounds flag, cube size | High |
+| `CYLINDER_PROJECT_UV_MAP` | target IDs, UV map name, create/overwrite flags, margin, bounds flag, axis, radius, height, seam angle | High |
+| `SPHERE_PROJECT_UV_MAP` | target IDs, UV map name, create/overwrite flags, margin, bounds flag, axis and pole axis | High |
+| `CAMERA_PROJECT_UV_MAP` | target IDs, UV map name, create/overwrite flags, margin, bounds flag, camera ID | High |
+| `LIGHTMAP_UNWRAP_UV_MAP` | target IDs, UV map name, create/overwrite flags, margin, bounds flag, resolution and packing flags | High |
+| `SELECT_UV_ISLANDS_BY_MATERIAL` | object ID, UV map name, material ID, island-set name | Low |
+| `TRANSFORM_UV_ISLANDS` | object ID, UV map name, island-set result ID, translation, rotation, scale, pivot | High |
+| `ALIGN_UV_ISLANDS` | object ID, UV map name, island-set result ID, mode, bounds | High |
+| `DISTRIBUTE_UV_ISLANDS` | object ID, UV map name, island-set result ID, axis, spacing, bounds | High |
+| `SCALE_UV_ISLANDS_TO_BOUNDS` | object ID, UV map name, island-set result ID, bounds, aspect flag | High |
+| `PIN_UV_ISLANDS` | object ID, UV map name, island-set result ID | Medium |
+| `UNPIN_UV_ISLANDS` | object ID, UV map name, island-set result ID | Medium |
+| `SET_UV_TEXEL_DENSITY` | target IDs, UV map name, texture resolution, pixels per unit, unit scale, nullable island-set ID | High |
+| `NORMALIZE_UV_TEXEL_DENSITY` | target IDs, UV map name, texture resolution, target density, preserve-pinned flag | High |
+| `PACK_UV_ISLANDS_ADVANCED` | target IDs, UV map name, margin, rotate/orientation/pinned flags, target tile | High |
+| `MOVE_UV_ISLANDS_TO_TILE` | object ID, UV map name, island-set result ID, tile coordinates | High |
+| `CREATE_UDIM_TILE_LAYOUT` | target IDs, UV map name, tile counts, margin, preserve-existing flag | High |
+| `VALIDATE_UDIM_LAYOUT` | target IDs, UV map name, tile range and check flags | Low |
+| `RELAX_UV_ISLANDS` | object ID, UV map name, island-set result ID, iterations, strength, preserve-pinned flag | High |
+| `MINIMIZE_UV_STRETCH` | target IDs, UV map name, iterations, strength, preserve-boundary flag | High |
+| `REPAIR_UV_BOUNDS` | target IDs, UV map name, target tile, scale/aspect flags | High |
+| `MERGE_DUPLICATE_UV_MAPS` | target IDs, source UV names, destination UV name, texture-node update/removal/ownership flags | High |
+| `REMOVE_UNUSED_ASSISTANT_UV_MAPS` | target IDs, ownership and dry-run flags | High |
+| `VALIDATE_UV_MAP` | target IDs, UV map name, enabled checks | Low |
+| `FIT_UV_ISLANDS_TO_IMAGE_REGION` | object ID, UV map name, island-set result ID, image result ID, region bounds, aspect flag | High |
+| `CREATE_TEXTURE_ATLAS_LAYOUT` | target IDs, UV map name, atlas name, image result ID, resolution, margin, rotation flag | Medium |
+| `ASSIGN_ATLAS_TEXTURE_REGIONS` | object ID, material ID, atlas result ID, material-region assignments | Medium |
+| `BAKE_UV_LAYOUT_GUIDE_IMAGE` | target IDs, UV map name, image name, dimensions, line/background colors, pack flag | Medium |
+| `CREATE_UV_GRID_TEST_MATERIAL` | material name, grid scale, two RGBA colors | Low |
+| `CREATE_UV_MAP_VARIANT` | object ID, source UV map, variant UV map, label, copy-pins flag | High |
+| `TAG_UV_VARIANT` | object ID, UV variant result ID, label, prompt summary | Low |
+| `CREATE_UV_COMPARISON_PREVIEW` | object ID, source UV map, UV variant result ID, preview name, dimensions, pack flag | Medium |
+| `ACCEPT_UV_VARIANT` | object ID, UV variant result ID, replacement UV map, active/render flags | High |
+| `REJECT_UV_VARIANT` | object ID, UV variant result ID, remove flag | High |
 | `IMPORT_PBR_TEXTURE_SET` | name prefix, explicit texture role/source/color-space entries | High |
 | `CREATE_PBR_MATERIAL` | name, texture set or nullable image IDs, fallback PBR values | High |
 | `SET_PBR_TEXTURE_ROLE` | texture set result ID, image result ID, role, color space | Medium |
+| `GENERATE_IMAGE_ASSET` | prompt, image name, dimensions, color space, pack flag | High |
 | `GENERATE_TEXTURE_IMAGE` | prompt, image name, dimensions, pattern, colors, color space, pack flag | High |
 | `SAVE_GENERATED_TEXTURE` | image result ID, explicit local output path, file format, pack-after-save flag | High |
+| `APPLY_IMAGE_TO_MATERIAL` | material ID, image result ID, node label, target socket, projection, extension, nullable UV map | Medium |
 | `ATTACH_GENERATED_TEXTURE` | material ID, image result ID, node label, target socket, nullable UV map | Medium |
 | `CREATE_PAINT_IMAGE` | image name, dimensions, fill color, color space, pack flag | High |
 | `ASSIGN_PAINT_SLOT` | object ID, material ID, image result ID, UV map name, node label, target socket | Medium |
@@ -107,6 +183,13 @@ Every operation requires a unique `operation_id` and an exact `type`. Unknown fi
 | `CREATE_SCULPT_REGION_FROM_MATERIAL` | target ID, material ID, region name | High |
 | `CREATE_SCULPT_REGION_FROM_VERTEX_GROUP` | target ID, vertex group name, region name | High |
 | `CREATE_SCULPT_MASK` | target ID, sculpt region result ID, mask name, strength | High |
+| `INVERT_SCULPT_MASK` | target ID, mask name, iterations, strength | High |
+| `CLEAR_SCULPT_MASK` | target ID, mask name, iterations, strength | High |
+| `BLUR_SCULPT_MASK` | target ID, mask name, iterations, strength | High |
+| `SHARPEN_SCULPT_MASK` | target ID, mask name, iterations, strength | High |
+| `GROW_SCULPT_MASK` | target ID, mask name, iterations, strength | High |
+| `SHRINK_SCULPT_MASK` | target ID, mask name, iterations, strength | High |
+| `COMBINE_SCULPT_MASKS` | target ID, source mask name, target mask name, result mask name, combine mode | High |
 | `CREATE_FACE_SET_FROM_MATERIAL` | target ID, material ID, face-set name | High |
 | `CREATE_FACE_SET_FROM_VERTEX_GROUP` | target ID, vertex group name, face-set name | High |
 | `APPLY_SCULPT_REGION_OPERATION` | sculpt region result ID, mode, strength, iterations | High |
@@ -134,13 +217,28 @@ Existing targets use typed IDs from the submitted context snapshot:
 `CREATE_PROCEDURAL_MATERIAL`, `ADD_LIGHT`, `ADD_CAMERA`, `CREATE_COLLECTION`,
 `CREATE_TEXT_OBJECT`, `JOIN_OBJECTS`, `CREATE_SHADER_NODE`, `LOAD_IMAGE_TEXTURE`,
 `CREATE_SHADER_COLOR_RAMP`, `CREATE_SHADER_MIX_CHAIN`, `CREATE_SHADER_GRAPH_TEMPLATE`,
+`CREATE_LAYERED_SHADER_MATERIAL`, `ADD_SHADER_LAYER`, `CREATE_PROCEDURAL_PATTERN_NODE_SET`,
+`CREATE_EDGE_WEAR_SHADER`, `CREATE_TRIPLANAR_MAPPING_SETUP`,
+`CREATE_OBJECT_SPACE_GRADIENT_SHADER`, `CREATE_CURVATURE_STYLE_MASK`,
+`EXTRACT_MATERIAL_PALETTE_FROM_IMAGE`, `CREATE_MATERIAL_FROM_REFERENCE_IMAGE`,
+`CREATE_LOOKDEV_PREVIEW`, `CREATE_GLASS_MATERIAL`, `CREATE_TRANSLUCENT_MATERIAL`,
+`CREATE_EMISSION_MATERIAL`, `CREATE_VOLUME_MATERIAL`, `CREATE_TOON_SHADER_MATERIAL`,
+`CREATE_ANISOTROPIC_MATERIAL`, `CREATE_MATERIAL_VARIANT`, `CREATE_SHADER_COMPARISON_PREVIEW`,
 `CREATE_IMAGE_TEXTURE_NODE`, `IMPORT_PBR_TEXTURE_SET`, `CREATE_PBR_MATERIAL`,
-`GENERATE_TEXTURE_IMAGE`, `CREATE_PAINT_IMAGE`, `CREATE_BAKE_TARGET_IMAGE`, `ASSIGN_PAINT_SLOT`,
-`ATTACH_GENERATED_TEXTURE`, `ASSIGN_BAKED_TEXTURE`, `CREATE_GENERATED_GEOMETRY_COPY`,
+`GENERATE_IMAGE_ASSET`, `GENERATE_TEXTURE_IMAGE`, `CREATE_PAINT_IMAGE`, `CREATE_BAKE_TARGET_IMAGE`,
+`ASSIGN_PAINT_SLOT`, `APPLY_IMAGE_TO_MATERIAL`, `ATTACH_GENERATED_TEXTURE`,
+`ASSIGN_BAKED_TEXTURE`, `CREATE_GENERATED_GEOMETRY_COPY`,
 `CREATE_SMOOTHED_COPY`, `CREATE_DISPLACED_COPY`, `CREATE_REMESHED_COPY`,
 `CREATE_SCULPT_REGION_FROM_MATERIAL`, `CREATE_SCULPT_REGION_FROM_VERTEX_GROUP`,
 `CREATE_SCULPT_MASK`, `CREATE_DYNAMIC_TOPOLOGY_COPY`, `CREATE_FACE_SET_FROM_MATERIAL`,
-`CREATE_FACE_SET_FROM_VERTEX_GROUP`, `CREATE_PREVIEW_IMAGE`, and `CREATE_RENDER_PREVIEW_IMAGE`
+`CREATE_FACE_SET_FROM_VERTEX_GROUP`, `CREATE_PREVIEW_IMAGE`, `CREATE_RENDER_PREVIEW_IMAGE`,
+`INSPECT_UV_MAP`, `CREATE_UV_DIAGNOSTIC_REPORT`, `CREATE_UV_OVERLAP_PREVIEW`,
+`CREATE_UV_STRETCH_PREVIEW`, `MARK_UV_SEAMS_BY_ANGLE`, `MARK_UV_SEAMS_BY_MATERIAL`,
+`MARK_UV_SEAMS_BY_EDGE_SET`, `CREATE_UV_ISLANDS_FROM_SEAMS`,
+`SELECT_UV_ISLANDS_BY_MATERIAL`, `VALIDATE_UDIM_LAYOUT`, `VALIDATE_UV_MAP`,
+`CREATE_TEXTURE_ATLAS_LAYOUT`, `BAKE_UV_LAYOUT_GUIDE_IMAGE`,
+`CREATE_UV_GRID_TEST_MATERIAL`, `CREATE_UV_MAP_VARIANT`, and
+`CREATE_UV_COMPARISON_PREVIEW`
 each produce one addressable result. A later operation in the same plan may reference that result
 as `result:<operation_id>`. Forward references and result-kind mismatches are rejected. Duplicate
 operations, asset imports, blend data loading, and separate operations can produce multiple objects
@@ -232,13 +330,16 @@ These rules are implemented by the main-thread executor:
 - `CREATE_PBR_MATERIAL` builds one controlled Principled BSDF material from a texture set and/or
   explicit image results. Non-color PBR roles are forced to non-color color space.
 - `SET_PBR_TEXTURE_ROLE` updates a texture set role and color space for an explicit image result.
-- `GENERATE_TEXTURE_IMAGE` creates a bounded local image from prompt metadata and an approved
-  pattern. When `OPENAI_IMAGE_GENERATION_ENABLED=true`, it may call OpenAI image generation using the
-  existing `OPENAI_API_KEY`; otherwise it falls back to deterministic local pattern generation.
+- `GENERATE_IMAGE_ASSET` creates a bounded standalone image from prompt metadata. It calls OpenAI
+  image generation using `OPENAI_API_KEY` or the Blender session key when OpenAI is selected; set
+  `OPENAI_IMAGE_GENERATION_ENABLED=false` to use deterministic local pattern generation instead.
+- `GENERATE_TEXTURE_IMAGE` creates a bounded local texture image from prompt metadata and an
+  approved pattern. It uses the same default OpenAI image-generation path and explicit local
+  fallback switch as `GENERATE_IMAGE_ASSET`.
 - `SAVE_GENERATED_TEXTURE` saves an explicit image result to a local path whose parent directory
   already exists. Existing output files are not overwritten.
-- `ATTACH_GENERATED_TEXTURE`, `ASSIGN_PAINT_SLOT`, and `ASSIGN_BAKED_TEXTURE` attach explicit image
-  results to controlled material texture nodes.
+- `APPLY_IMAGE_TO_MATERIAL`, `ATTACH_GENERATED_TEXTURE`, `ASSIGN_PAINT_SLOT`, and
+  `ASSIGN_BAKED_TEXTURE` attach explicit image results to controlled material texture nodes.
 - `CREATE_PAINT_IMAGE` and `CREATE_BAKE_TARGET_IMAGE` create bounded image datablocks with explicit
   dimensions, fill color, color space, and packing behavior.
 - `APPLY_TEXTURE_PAINT_STROKES` edits image pixels with bounded UV-space strokes and stores prior
@@ -278,7 +379,13 @@ These rules are implemented by the main-thread executor:
   explicit approval; it does not delete the original.
 - `CREATE_SCULPT_REGION_FROM_MATERIAL` and `CREATE_SCULPT_REGION_FROM_VERTEX_GROUP` create named
   runtime sculpt regions from explicit mesh selections.
-- `CREATE_SCULPT_MASK` creates a vertex-group mask from a sculpt region.
+- `CREATE_SCULPT_MASK` creates a named vertex-group mask from a sculpt region and rejects duplicate
+  mask names.
+- `INVERT_SCULPT_MASK`, `CLEAR_SCULPT_MASK`, `BLUR_SCULPT_MASK`, `SHARPEN_SCULPT_MASK`,
+  `GROW_SCULPT_MASK`, and `SHRINK_SCULPT_MASK` edit existing vertex-group masks through bounded,
+  deterministic weight operations and store previous weights for rollback.
+- `COMBINE_SCULPT_MASKS` combines two existing mask vertex groups into a new result mask using
+  `replace`, `add`, `subtract`, or `intersect`; source and target mask names must differ.
 - `CREATE_FACE_SET_FROM_MATERIAL` and `CREATE_FACE_SET_FROM_VERTEX_GROUP` create mesh face
   attributes from explicit material or vertex-group selections.
 - `APPLY_SCULPT_REGION_OPERATION` applies bounded smooth, inflate, or flatten behavior to an
@@ -298,10 +405,8 @@ These rules are implemented by the main-thread executor:
 
 ## Contract Limits
 
-- Defaults: 20 operations per plan, 100 existing object targets per operation, and 100 total objects
-  created by one duplicate operation.
-- Selectable hard maxima: 100 operations per plan, 500 existing targets per operation, and 1,000
-  total objects created by one duplicate operation.
+- Defaults and selectable hard maxima: 1,000 operations per plan, 1,000 existing object targets per
+  operation, and 10,000 total objects created by one duplicate operation.
 - Users may change each limit from the `Plan Limits` panel or extension preferences. Values cannot
   exceed the controlled-contract hard maxima.
 - Duplicate output is calculated as target count multiplied by duplicate count. The schema bounds

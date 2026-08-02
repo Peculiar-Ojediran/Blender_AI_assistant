@@ -6,7 +6,7 @@ locally, shows it for approval, and applies only supported Blender operations.
 
 ## Current Release
 
-- Version: 0.1.4 MVP.
+- Version: 1.5.0.
 - Verified platform: Windows x64.
 - Verified Blender version: 5.1.0.
 - Providers: OpenAI Responses API and NVIDIA NIM chat completions.
@@ -15,7 +15,7 @@ locally, shows it for approval, and applies only supported Blender operations.
 - NVIDIA models: GPT-OSS 20B, Llama 3.3 70B Instruct, Nemotron 3 Ultra 550B, or a custom NIM model
   name.
 - Configurable plan limits: operations, targets per operation, and duplicate outputs.
-- Local release package after building: `dist/blender_ai_assistant-0.1.4.zip`.
+- Local release package after building: `dist/blender_ai_assistant-1.5.0.zip`.
 
 The archive contains all Python runtime dependencies. It does not require `pip`, a provider SDK, or
 a local bridge service on the user's machine. The generated `dist/` directory is intentionally not

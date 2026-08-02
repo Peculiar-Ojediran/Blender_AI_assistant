@@ -23,7 +23,11 @@ from ..operations import (
     preflight_plan,
 )
 from ..operations.undo import create_recovery_point, global_undo_enabled
-from ..providers.openai import DEFAULT_REASONING_EFFORT, DEFAULT_TIMEOUT_SECONDS
+from ..providers.openai import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_TIMEOUT_SECONDS,
+)
 from ..providers.registry import provider_label
 from ..safety import (
     SafetyConfirmationRequired,
@@ -139,7 +143,11 @@ def _start_planning(
         if preferences is not None
         else DEFAULT_TIMEOUT_SECONDS
     )
-    max_output_tokens = preferences.max_output_tokens if preferences is not None else 4_096
+    max_output_tokens = (
+        preferences.max_output_tokens
+        if preferences is not None
+        else DEFAULT_MAX_OUTPUT_TOKENS
+    )
     limits = resolve_operation_limits(preferences)
     start_planning_job(
         prompt=prompt,

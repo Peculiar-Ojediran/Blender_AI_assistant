@@ -16,10 +16,17 @@ from types import MappingProxyType
 from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
+from ..config import resolve_environment_value
 from ..context import SceneContextSnapshot, TargetKind
 from ..providers.openai_images import OpenAIImageProvider, openai_image_generation_enabled
+from ..providers.registry import PROVIDER_OPENAI
 from .models import Operation, OperationPlan, OperationType, PlanStatus
-from .registries import MESH_PROCESSING_LIMITS, PBR_NON_COLOR_ROLES
+from .registries import (
+    MESH_PROCESSING_LIMITS,
+    PBR_NON_COLOR_ROLES,
+    SHADER_SOCKET_COMPATIBILITY,
+    SHADER_SOCKET_FAMILIES,
+)
 from .targets import RESULT_REFERENCE_PREFIX, resolve_plan_targets
 
 type ProgressCallback = Callable[[int, int], None]
@@ -313,9 +320,17 @@ class _PreflightSimulation:
         self.image_results: set[str] = set()
         self.texture_set_results: set[str] = set()
         self.shader_node_results: set[str] = set()
+        self.shader_layer_results: set[str] = set()
+        self.material_palette_results: set[str] = set()
+        self.uv_report_results: set[str] = set()
+        self.uv_seam_set_results: set[str] = set()
+        self.uv_island_set_results: set[str] = set()
+        self.uv_atlas_results: set[str] = set()
+        self.uv_variant_results: dict[str, tuple[str, str]] = {}
         self.uv_maps: dict[str, set[str]] = {}
         self.modifier_names: dict[str, set[str]] = {}
         self.shape_key_names: dict[str, set[str]] = {}
+        self.vertex_group_names: dict[str, set[str]] = {}
         self.scene_collections = set(_scene_collections(context.scene.collection))
         self.collection_names = {
             item.name: f"collection:{int(item.session_uid)}"
@@ -362,6 +377,38 @@ class _PreflightSimulation:
             OperationType.CREATE_SHADER_MIX_CHAIN: self._create_shader_node,
             OperationType.CREATE_SHADER_GRAPH_TEMPLATE: self._create_shader_node,
             OperationType.VALIDATE_MATERIAL_OUTPUT: self._material_operation,
+            OperationType.CREATE_LAYERED_SHADER_MATERIAL: self._create_material,
+            OperationType.ADD_SHADER_LAYER: self._add_shader_layer,
+            OperationType.SET_SHADER_LAYER_MASK: self._shader_layer_operation,
+            OperationType.REORDER_SHADER_LAYERS: self._reorder_shader_layers,
+            OperationType.REMOVE_SHADER_LAYER: self._shader_layer_operation,
+            OperationType.CREATE_PROCEDURAL_PATTERN_NODE_SET: self._create_shader_node,
+            OperationType.CREATE_EDGE_WEAR_SHADER: self._create_shader_node,
+            OperationType.CREATE_TRIPLANAR_MAPPING_SETUP: self._create_shader_node,
+            OperationType.CREATE_OBJECT_SPACE_GRADIENT_SHADER: self._create_shader_node,
+            OperationType.CREATE_CURVATURE_STYLE_MASK: self._create_shader_node,
+            OperationType.EXTRACT_MATERIAL_PALETTE_FROM_IMAGE: self._extract_material_palette,
+            OperationType.CREATE_MATERIAL_FROM_REFERENCE_IMAGE: self._create_reference_material,
+            OperationType.MATCH_MATERIAL_TO_REFERENCE: self._material_operation,
+            OperationType.CREATE_LOOKDEV_PREVIEW: self._create_preview_image,
+            OperationType.CREATE_GLASS_MATERIAL: self._create_material,
+            OperationType.CREATE_TRANSLUCENT_MATERIAL: self._create_material,
+            OperationType.CREATE_EMISSION_MATERIAL: self._create_material,
+            OperationType.CREATE_VOLUME_MATERIAL: self._create_material,
+            OperationType.CREATE_TOON_SHADER_MATERIAL: self._create_material,
+            OperationType.CREATE_ANISOTROPIC_MATERIAL: self._create_material,
+            OperationType.REMOVE_UNUSED_ASSISTANT_SHADER_NODES: self._material_operation,
+            OperationType.CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS: (
+                self._consolidate_duplicate_materials
+            ),
+            OperationType.NORMALIZE_SHADER_NODE_LAYOUT: self._material_operation,
+            OperationType.VALIDATE_SHADER_COMPATIBILITY: self._material_operation,
+            OperationType.REPAIR_BROKEN_SHADER_LINKS: self._material_operation,
+            OperationType.CREATE_MATERIAL_VARIANT: self._create_material_variant,
+            OperationType.TAG_MATERIAL_VARIANT: self._material_variant_operation,
+            OperationType.CREATE_SHADER_COMPARISON_PREVIEW: self._create_comparison_preview,
+            OperationType.ACCEPT_MATERIAL_VARIANT: self._accept_material_variant,
+            OperationType.REJECT_MATERIAL_VARIANT: self._material_variant_operation,
             OperationType.LOAD_IMAGE_TEXTURE: self._load_image_texture,
             OperationType.CREATE_IMAGE_TEXTURE_NODE: self._create_image_texture_node,
             OperationType.SET_TEXTURE_MAPPING: self._set_texture_mapping,
@@ -369,11 +416,57 @@ class _PreflightSimulation:
             OperationType.CREATE_UV_MAP: self._create_uv_map,
             OperationType.UNWRAP_UV_MAP: self._unwrap_uv_map,
             OperationType.PACK_UV_ISLANDS: self._pack_uv_islands,
+            OperationType.INSPECT_UV_MAP: self._uv_report,
+            OperationType.CREATE_UV_DIAGNOSTIC_REPORT: self._uv_report,
+            OperationType.CREATE_UV_OVERLAP_PREVIEW: self._uv_preview,
+            OperationType.CREATE_UV_STRETCH_PREVIEW: self._uv_preview,
+            OperationType.MARK_UV_SEAMS_BY_ANGLE: self._mark_uv_seams,
+            OperationType.MARK_UV_SEAMS_BY_MATERIAL: self._mark_uv_seams,
+            OperationType.MARK_UV_SEAMS_BY_EDGE_SET: self._mark_uv_seams,
+            OperationType.CLEAR_UV_SEAMS: self._clear_uv_seams,
+            OperationType.CREATE_UV_ISLANDS_FROM_SEAMS: self._create_uv_islands_from_seams,
+            OperationType.SMART_PROJECT_UV_MAP: self._project_uv_map,
+            OperationType.CUBE_PROJECT_UV_MAP: self._project_uv_map,
+            OperationType.CYLINDER_PROJECT_UV_MAP: self._project_uv_map,
+            OperationType.SPHERE_PROJECT_UV_MAP: self._project_uv_map,
+            OperationType.CAMERA_PROJECT_UV_MAP: self._project_uv_map,
+            OperationType.LIGHTMAP_UNWRAP_UV_MAP: self._project_uv_map,
+            OperationType.SELECT_UV_ISLANDS_BY_MATERIAL: self._select_uv_islands,
+            OperationType.TRANSFORM_UV_ISLANDS: self._uv_island_operation,
+            OperationType.ALIGN_UV_ISLANDS: self._uv_island_operation,
+            OperationType.DISTRIBUTE_UV_ISLANDS: self._uv_island_operation,
+            OperationType.SCALE_UV_ISLANDS_TO_BOUNDS: self._uv_island_operation,
+            OperationType.PIN_UV_ISLANDS: self._uv_island_operation,
+            OperationType.UNPIN_UV_ISLANDS: self._uv_island_operation,
+            OperationType.SET_UV_TEXEL_DENSITY: self._uv_map_operation,
+            OperationType.NORMALIZE_UV_TEXEL_DENSITY: self._uv_map_operation,
+            OperationType.PACK_UV_ISLANDS_ADVANCED: self._uv_map_operation,
+            OperationType.MOVE_UV_ISLANDS_TO_TILE: self._uv_island_operation,
+            OperationType.CREATE_UDIM_TILE_LAYOUT: self._create_udim_tile_layout,
+            OperationType.VALIDATE_UDIM_LAYOUT: self._uv_multi_report,
+            OperationType.RELAX_UV_ISLANDS: self._uv_island_operation,
+            OperationType.MINIMIZE_UV_STRETCH: self._uv_map_operation,
+            OperationType.REPAIR_UV_BOUNDS: self._uv_map_operation,
+            OperationType.MERGE_DUPLICATE_UV_MAPS: self._merge_duplicate_uv_maps,
+            OperationType.REMOVE_UNUSED_ASSISTANT_UV_MAPS: self._remove_unused_uv_maps,
+            OperationType.VALIDATE_UV_MAP: self._uv_multi_report,
+            OperationType.FIT_UV_ISLANDS_TO_IMAGE_REGION: self._fit_uv_islands_to_image_region,
+            OperationType.CREATE_TEXTURE_ATLAS_LAYOUT: self._create_texture_atlas_layout,
+            OperationType.ASSIGN_ATLAS_TEXTURE_REGIONS: self._assign_atlas_texture_regions,
+            OperationType.BAKE_UV_LAYOUT_GUIDE_IMAGE: self._uv_guide_image,
+            OperationType.CREATE_UV_GRID_TEST_MATERIAL: self._create_material,
+            OperationType.CREATE_UV_MAP_VARIANT: self._create_uv_variant,
+            OperationType.TAG_UV_VARIANT: self._uv_variant_operation,
+            OperationType.CREATE_UV_COMPARISON_PREVIEW: self._uv_variant_preview,
+            OperationType.ACCEPT_UV_VARIANT: self._accept_uv_variant,
+            OperationType.REJECT_UV_VARIANT: self._uv_variant_operation,
             OperationType.IMPORT_PBR_TEXTURE_SET: self._import_pbr_texture_set,
             OperationType.CREATE_PBR_MATERIAL: self._create_material,
             OperationType.SET_PBR_TEXTURE_ROLE: self._set_pbr_texture_role,
+            OperationType.GENERATE_IMAGE_ASSET: self._create_image_datablock,
             OperationType.GENERATE_TEXTURE_IMAGE: self._create_image_datablock,
             OperationType.SAVE_GENERATED_TEXTURE: self._save_generated_texture,
+            OperationType.APPLY_IMAGE_TO_MATERIAL: self._attach_generated_texture,
             OperationType.ATTACH_GENERATED_TEXTURE: self._attach_generated_texture,
             OperationType.CREATE_PAINT_IMAGE: self._create_image_datablock,
             OperationType.ASSIGN_PAINT_SLOT: self._assign_paint_slot,
@@ -401,6 +494,13 @@ class _PreflightSimulation:
             OperationType.CREATE_SCULPT_REGION_FROM_MATERIAL: self._create_sculpt_region,
             OperationType.CREATE_SCULPT_REGION_FROM_VERTEX_GROUP: self._create_sculpt_region,
             OperationType.CREATE_SCULPT_MASK: self._create_sculpt_mask,
+            OperationType.INVERT_SCULPT_MASK: self._sculpt_mask_operation,
+            OperationType.CLEAR_SCULPT_MASK: self._sculpt_mask_operation,
+            OperationType.BLUR_SCULPT_MASK: self._sculpt_mask_operation,
+            OperationType.SHARPEN_SCULPT_MASK: self._sculpt_mask_operation,
+            OperationType.GROW_SCULPT_MASK: self._sculpt_mask_operation,
+            OperationType.SHRINK_SCULPT_MASK: self._sculpt_mask_operation,
+            OperationType.COMBINE_SCULPT_MASKS: self._combine_sculpt_masks,
             OperationType.CREATE_FACE_SET_FROM_MATERIAL: self._create_face_set,
             OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: self._create_face_set,
             OperationType.APPLY_SCULPT_REGION_OPERATION: self._apply_sculpt_region_operation,
@@ -453,9 +553,20 @@ class _PreflightSimulation:
 
     def _create_material(self, operation: Operation) -> None:
         name = str(operation.payload["name"])
+        self._create_material_result(operation, name)
+
+    def _create_material_result(self, operation: Operation, name: str) -> None:
         reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
         self._reserve_name(self.material_names, name, reference)
         self.results[reference] = _SimTarget(TargetKind.MATERIAL, reference, name, None)
+
+    def _create_reference_material(self, operation: Operation) -> None:
+        self._material_palette(str(operation.payload["palette_id"]))
+        self._create_material_result(operation, str(operation.payload["material_name"]))
+
+    def _create_material_variant(self, operation: Operation) -> None:
+        self._target(str(operation.payload["source_material_id"]), TargetKind.MATERIAL)
+        self._create_material_result(operation, str(operation.payload["variant_name"]))
 
     def _assign_material(self, operation: Operation) -> None:
         self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
@@ -594,6 +705,62 @@ class _PreflightSimulation:
         self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
         self.shader_node_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
 
+    def _add_shader_layer(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self.shader_layer_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _shader_layer_operation(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._shader_layer(str(operation.payload["layer_id"]))
+        mask_source = operation.payload.get("mask_source")
+        if isinstance(mask_source, Mapping) and isinstance(mask_source.get("image_id"), str):
+            self._image(str(mask_source["image_id"]))
+
+    def _reorder_shader_layers(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        for layer_id in operation.payload["layer_order"]:
+            self._shader_layer(str(layer_id))
+
+    def _extract_material_palette(self, operation: Operation) -> None:
+        self.material_palette_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _create_preview_image(self, operation: Operation) -> None:
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._create_image_datablock(operation)
+
+    def _consolidate_duplicate_materials(self, operation: Operation) -> None:
+        for material_id in operation.payload["material_ids"]:
+            self._target(str(material_id), TargetKind.MATERIAL)
+        self._target(str(operation.payload["canonical_material_id"]), TargetKind.MATERIAL)
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_object(target)
+            if not target.supports_materials:
+                raise ExecutionPreflightError(
+                    f"Object target {target_id} does not support material slots."
+                )
+
+    def _material_variant_operation(self, operation: Operation) -> None:
+        self._target(str(operation.payload["variant_id"]), TargetKind.MATERIAL)
+
+    def _create_comparison_preview(self, operation: Operation) -> None:
+        self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._target(str(operation.payload["source_material_id"]), TargetKind.MATERIAL)
+        self._target(str(operation.payload["variant_id"]), TargetKind.MATERIAL)
+        self._create_image_datablock(operation)
+
+    def _accept_material_variant(self, operation: Operation) -> None:
+        self._target(str(operation.payload["variant_id"]), TargetKind.MATERIAL)
+        self._target(str(operation.payload["replace_material_id"]), TargetKind.MATERIAL)
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_object(target)
+            if not target.supports_materials:
+                raise ExecutionPreflightError(
+                    f"Object target {target_id} does not support material slots."
+                )
+
     def _set_shader_node_value(self, operation: Operation) -> None:
         self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
         self._shader_node(str(operation.payload["node_ref"]))
@@ -670,6 +837,188 @@ class _PreflightSimulation:
             target = self._target(target_id, TargetKind.OBJECT)
             self._editable_mesh_object(target)
             self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+
+    def _uv_report(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self.uv_report_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _uv_multi_report(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self.uv_report_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _uv_preview(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self._create_image_datablock(operation)
+
+    def _mark_uv_seams(self, operation: Operation) -> None:
+        material_id = operation.payload.get("material_id")
+        if isinstance(material_id, str):
+            self._target(material_id, TargetKind.MATERIAL)
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+        self.uv_seam_set_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _clear_uv_seams(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+
+    def _create_uv_islands_from_seams(self, operation: Operation) -> None:
+        self._uv_seam_set(str(operation.payload["seam_set_id"]))
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._ensure_projected_uv_map(target, operation)
+        self.uv_island_set_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _project_uv_map(self, operation: Operation) -> None:
+        camera_id = operation.payload.get("camera_id")
+        if isinstance(camera_id, str):
+            self._target(camera_id, TargetKind.OBJECT)
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._ensure_projected_uv_map(target, operation)
+
+    def _select_uv_islands(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self.uv_island_set_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _uv_island_operation(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self._uv_island_set(str(operation.payload["island_set_id"]))
+
+    def _uv_map_operation(self, operation: Operation) -> None:
+        island_set_id = operation.payload.get("island_set_id")
+        if isinstance(island_set_id, str):
+            self._uv_island_set(island_set_id)
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+
+    def _create_udim_tile_layout(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._ensure_projected_uv_map(target, operation)
+
+    def _merge_duplicate_uv_maps(self, operation: Operation) -> None:
+        source_names = tuple(str(name) for name in operation.payload["source_uv_map_names"])
+        destination = str(operation.payload["destination_uv_map_name"])
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            uv_maps = self._sim_uv_maps(target)
+            if destination not in uv_maps:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} has no destination UV map {destination!r}."
+                )
+            missing = [name for name in source_names if name not in uv_maps]
+            if missing:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} is missing UV maps: {', '.join(missing)}."
+                )
+            if bool(operation.payload["remove_sources"]):
+                for name in source_names:
+                    uv_maps.discard(name)
+
+    def _remove_unused_uv_maps(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+
+    def _fit_uv_islands_to_image_region(self, operation: Operation) -> None:
+        self._uv_island_operation(operation)
+        self._image(str(operation.payload["image_id"]))
+
+    def _create_texture_atlas_layout(self, operation: Operation) -> None:
+        self._image(str(operation.payload["image_id"]))
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self.uv_atlas_results.add(f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}")
+
+    def _assign_atlas_texture_regions(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._target(str(operation.payload["material_id"]), TargetKind.MATERIAL)
+        self._uv_atlas(str(operation.payload["atlas_id"]))
+        for assignment in operation.payload["assignments"]:
+            self._target(str(assignment["material_id"]), TargetKind.MATERIAL)
+
+    def _uv_guide_image(self, operation: Operation) -> None:
+        for target_id in operation.target_ids:
+            target = self._target(target_id, TargetKind.OBJECT)
+            self._editable_mesh_object(target)
+            self._require_sim_uv_map(target, str(operation.payload["uv_map_name"]))
+        self._create_image_datablock(operation)
+
+    def _create_uv_variant(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        uv_maps = self._sim_uv_maps(target)
+        source_name = str(operation.payload["source_uv_map_name"])
+        variant_name = str(operation.payload["variant_uv_map_name"])
+        if source_name not in uv_maps:
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no UV map {source_name!r}."
+            )
+        if variant_name in uv_maps:
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} already has UV map {variant_name!r}."
+            )
+        uv_maps.add(variant_name)
+        self.uv_variant_results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = (
+            target.token,
+            variant_name,
+        )
+
+    def _uv_variant_operation(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._uv_variant(str(operation.payload["variant_id"]), target)
+
+    def _uv_variant_preview(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_uv_map(target, str(operation.payload["source_uv_map_name"]))
+        self._uv_variant(str(operation.payload["variant_id"]), target)
+        self._create_image_datablock(operation)
+
+    def _accept_uv_variant(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._uv_variant(str(operation.payload["variant_id"]), target)
+        self._sim_uv_maps(target).add(str(operation.payload["replace_uv_map_name"]))
+
+    def _ensure_projected_uv_map(self, target: _SimTarget, operation: Operation) -> None:
+        uv_name = str(operation.payload["uv_map_name"])
+        uv_maps = self._sim_uv_maps(target)
+        exists = uv_name in uv_maps
+        if not exists and not bool(operation.payload.get("create_if_missing", True)):
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no UV map {uv_name!r}."
+            )
+        if exists and not bool(operation.payload.get("overwrite_existing", True)):
+            raise ExecutionPreflightError(
+                f"{operation.type.value} needs overwrite_existing for UV map {uv_name!r}."
+            )
+        uv_maps.add(uv_name)
 
     def _import_pbr_texture_set(self, operation: Operation) -> None:
         prefix = str(operation.payload["name_prefix"])
@@ -830,7 +1179,7 @@ class _PreflightSimulation:
             TargetKind.OBJECT,
             reference,
             str(operation.payload["region_name"]),
-            None,
+            target.live,
             object_type="SCULPT_REGION",
         )
 
@@ -838,6 +1187,59 @@ class _PreflightSimulation:
         region = self.results.get(str(operation.payload["region_id"]))
         if region is None or region.object_type != "SCULPT_REGION":
             raise ExecutionPreflightError("Sculpt region result is unavailable.")
+        if region.live is not None:
+            target = _SimTarget(
+                TargetKind.OBJECT,
+                f"object:{int(region.live.session_uid)}",
+                str(region.live.name),
+                region.live,
+                supports_materials=True,
+                object_type=getattr(region.live, "type", ""),
+            )
+            mask_names = self._sim_vertex_groups(target)
+            mask_name = str(operation.payload["mask_name"])
+            if mask_name in mask_names:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} already has vertex group {mask_name!r}."
+                )
+            mask_names.add(mask_name)
+        self.results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = _SimTarget(
+            TargetKind.OBJECT,
+            f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}",
+            str(operation.payload["mask_name"]),
+            region.live,
+            object_type="SCULPT_MASK",
+        )
+
+    def _sculpt_mask_operation(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        self._require_sim_vertex_group(target, str(operation.payload["mask_name"]))
+
+    def _combine_sculpt_masks(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        mask_names = self._sim_vertex_groups(target)
+        source = str(operation.payload["source_mask_name"])
+        target_mask = str(operation.payload["target_mask_name"])
+        result = str(operation.payload["result_mask_name"])
+        for mask_name in (source, target_mask):
+            if mask_name not in mask_names:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} has no vertex group {mask_name!r}."
+                )
+        if result in mask_names:
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} already has vertex group {result!r}."
+            )
+        mask_names.add(result)
+        self.results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = _SimTarget(
+            TargetKind.OBJECT,
+            f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}",
+            result,
+            target.live,
+            object_type="SCULPT_MASK",
+        )
 
     def _create_face_set(self, operation: Operation) -> None:
         target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
@@ -960,6 +1362,12 @@ class _PreflightSimulation:
                 f"Shader node result {node_ref} is unavailable."
             )
 
+    def _shader_layer(self, layer_ref: str) -> None:
+        if layer_ref not in self.shader_layer_results:
+            raise ExecutionPreflightError(
+                f"Shader layer result {layer_ref} is unavailable."
+            )
+
     def _image(self, image_ref: str) -> None:
         if image_ref not in self.image_results:
             raise ExecutionPreflightError(f"Image result {image_ref} is unavailable.")
@@ -969,6 +1377,39 @@ class _PreflightSimulation:
             raise ExecutionPreflightError(
                 f"Texture set result {texture_set_ref} is unavailable."
             )
+
+    def _material_palette(self, palette_ref: str) -> None:
+        if palette_ref not in self.material_palette_results:
+            raise ExecutionPreflightError(
+                f"Material palette result {palette_ref} is unavailable."
+            )
+
+    def _uv_seam_set(self, seam_set_ref: str) -> None:
+        if seam_set_ref not in self.uv_seam_set_results:
+            raise ExecutionPreflightError(
+                f"UV seam-set result {seam_set_ref} is unavailable."
+            )
+
+    def _uv_island_set(self, island_set_ref: str) -> None:
+        if island_set_ref not in self.uv_island_set_results:
+            raise ExecutionPreflightError(
+                f"UV island-set result {island_set_ref} is unavailable."
+            )
+
+    def _uv_atlas(self, atlas_ref: str) -> None:
+        if atlas_ref not in self.uv_atlas_results:
+            raise ExecutionPreflightError(f"UV atlas result {atlas_ref} is unavailable.")
+
+    def _uv_variant(self, variant_ref: str, target: _SimTarget) -> None:
+        variant = self.uv_variant_results.get(variant_ref)
+        if variant is None:
+            raise ExecutionPreflightError(f"UV variant result {variant_ref} is unavailable.")
+        target_token, variant_name = variant
+        if target_token != target.token:
+            raise ExecutionPreflightError(
+                f"UV variant {variant_ref} belongs to a different mesh target."
+            )
+        self._require_sim_uv_map(target, variant_name)
 
     def _sim_uv_maps(self, target: _SimTarget) -> set[str]:
         uv_maps = self.uv_maps.get(target.token)
@@ -1007,6 +1448,22 @@ class _PreflightSimulation:
                 names = {str(key.name) for key in key_blocks}
         self.shape_key_names[target.token] = names
         return names
+
+    def _sim_vertex_groups(self, target: _SimTarget) -> set[str]:
+        groups = self.vertex_group_names.get(target.token)
+        if groups is not None:
+            return groups
+        names: set[str] = set()
+        if target.live is not None and getattr(target.live, "type", "") == "MESH":
+            names = {str(group.name) for group in target.live.vertex_groups}
+        self.vertex_group_names[target.token] = names
+        return names
+
+    def _require_sim_vertex_group(self, target: _SimTarget, group_name: str) -> None:
+        if group_name not in self._sim_vertex_groups(target):
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no vertex group {group_name!r}."
+            )
 
     @staticmethod
     def _reserve_name(names: dict[str, str], name: str, token: str) -> None:
@@ -1144,6 +1601,98 @@ def _execute_operation(
         OperationType.VALIDATE_MATERIAL_OUTPUT: lambda: _validate_material_output(
             operation, prepared, results, transaction
         ),
+        OperationType.CREATE_LAYERED_SHADER_MATERIAL: lambda: _create_layered_shader_material(
+            operation, results, transaction
+        ),
+        OperationType.ADD_SHADER_LAYER: lambda: _add_shader_layer(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SET_SHADER_LAYER_MASK: lambda: _set_shader_layer_mask(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REORDER_SHADER_LAYERS: lambda: _reorder_shader_layers(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REMOVE_SHADER_LAYER: lambda: _remove_shader_layer(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_PROCEDURAL_PATTERN_NODE_SET: lambda: (
+            _create_procedural_pattern_node_set(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_EDGE_WEAR_SHADER: lambda: _create_procedural_pattern_node_set(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_TRIPLANAR_MAPPING_SETUP: lambda: (
+            _create_procedural_pattern_node_set(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_OBJECT_SPACE_GRADIENT_SHADER: lambda: (
+            _create_procedural_pattern_node_set(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_CURVATURE_STYLE_MASK: lambda: _create_procedural_pattern_node_set(
+            operation, prepared, results, transaction
+        ),
+        OperationType.EXTRACT_MATERIAL_PALETTE_FROM_IMAGE: lambda: (
+            _extract_material_palette_from_image(operation, results, transaction)
+        ),
+        OperationType.CREATE_MATERIAL_FROM_REFERENCE_IMAGE: lambda: (
+            _create_material_from_reference_image(operation, results, transaction)
+        ),
+        OperationType.MATCH_MATERIAL_TO_REFERENCE: lambda: _match_material_to_reference(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_LOOKDEV_PREVIEW: lambda: _create_lookdev_preview(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_GLASS_MATERIAL: lambda: _create_specialized_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_TRANSLUCENT_MATERIAL: lambda: _create_specialized_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_EMISSION_MATERIAL: lambda: _create_specialized_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_VOLUME_MATERIAL: lambda: _create_specialized_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_TOON_SHADER_MATERIAL: lambda: _create_specialized_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_ANISOTROPIC_MATERIAL: lambda: _create_specialized_material(
+            operation, results, transaction
+        ),
+        OperationType.REMOVE_UNUSED_ASSISTANT_SHADER_NODES: lambda: (
+            _remove_unused_assistant_shader_nodes(operation, prepared, results, transaction)
+        ),
+        OperationType.CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS: lambda: (
+            _consolidate_duplicate_assistant_materials(
+                operation, prepared, results, transaction
+            )
+        ),
+        OperationType.NORMALIZE_SHADER_NODE_LAYOUT: lambda: _normalize_shader_node_layout(
+            operation, prepared, results, transaction
+        ),
+        OperationType.VALIDATE_SHADER_COMPATIBILITY: lambda: (
+            _validate_shader_compatibility_operation(operation, prepared, results, transaction)
+        ),
+        OperationType.REPAIR_BROKEN_SHADER_LINKS: lambda: _repair_broken_shader_links(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_MATERIAL_VARIANT: lambda: _create_material_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.TAG_MATERIAL_VARIANT: lambda: _tag_material_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SHADER_COMPARISON_PREVIEW: lambda: (
+            _create_shader_comparison_preview(operation, prepared, results, transaction)
+        ),
+        OperationType.ACCEPT_MATERIAL_VARIANT: lambda: _accept_material_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REJECT_MATERIAL_VARIANT: lambda: _reject_material_variant(
+            operation, prepared, results, transaction
+        ),
         OperationType.LOAD_IMAGE_TEXTURE: lambda: _load_image_texture(
             operation, results, transaction
         ),
@@ -1165,6 +1714,138 @@ def _execute_operation(
         OperationType.PACK_UV_ISLANDS: lambda: _pack_uv_islands(
             operation, prepared, results, transaction
         ),
+        OperationType.INSPECT_UV_MAP: lambda: _create_uv_report(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_DIAGNOSTIC_REPORT: lambda: _create_uv_report(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_OVERLAP_PREVIEW: lambda: _create_uv_preview(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_STRETCH_PREVIEW: lambda: _create_uv_preview(
+            operation, prepared, results, transaction
+        ),
+        OperationType.MARK_UV_SEAMS_BY_ANGLE: lambda: _mark_uv_seams_by_angle(
+            operation, prepared, results, transaction
+        ),
+        OperationType.MARK_UV_SEAMS_BY_MATERIAL: lambda: _mark_uv_seams_by_material(
+            operation, prepared, results, transaction
+        ),
+        OperationType.MARK_UV_SEAMS_BY_EDGE_SET: lambda: _mark_uv_seams_by_edge_set(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CLEAR_UV_SEAMS: lambda: _clear_uv_seams(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_ISLANDS_FROM_SEAMS: lambda: _create_uv_islands_from_seams(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SMART_PROJECT_UV_MAP: lambda: _project_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CUBE_PROJECT_UV_MAP: lambda: _project_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CYLINDER_PROJECT_UV_MAP: lambda: _project_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SPHERE_PROJECT_UV_MAP: lambda: _project_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CAMERA_PROJECT_UV_MAP: lambda: _project_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.LIGHTMAP_UNWRAP_UV_MAP: lambda: _project_uv_map(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SELECT_UV_ISLANDS_BY_MATERIAL: lambda: _select_uv_islands_by_material(
+            operation, prepared, results, transaction
+        ),
+        OperationType.TRANSFORM_UV_ISLANDS: lambda: _transform_uv_islands(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ALIGN_UV_ISLANDS: lambda: _align_uv_islands(
+            operation, prepared, results, transaction
+        ),
+        OperationType.DISTRIBUTE_UV_ISLANDS: lambda: _distribute_uv_islands(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SCALE_UV_ISLANDS_TO_BOUNDS: lambda: _scale_uv_islands_to_bounds(
+            operation, prepared, results, transaction
+        ),
+        OperationType.PIN_UV_ISLANDS: lambda: _set_uv_island_pins(
+            operation, prepared, results, transaction, pinned=True
+        ),
+        OperationType.UNPIN_UV_ISLANDS: lambda: _set_uv_island_pins(
+            operation, prepared, results, transaction, pinned=False
+        ),
+        OperationType.SET_UV_TEXEL_DENSITY: lambda: _set_uv_texel_density(
+            operation, prepared, results, transaction
+        ),
+        OperationType.NORMALIZE_UV_TEXEL_DENSITY: lambda: _normalize_uv_texel_density(
+            operation, prepared, results, transaction
+        ),
+        OperationType.PACK_UV_ISLANDS_ADVANCED: lambda: _pack_uv_islands_advanced(
+            operation, prepared, results, transaction
+        ),
+        OperationType.MOVE_UV_ISLANDS_TO_TILE: lambda: _move_uv_islands_to_tile(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UDIM_TILE_LAYOUT: lambda: _create_udim_tile_layout(
+            operation, prepared, results, transaction
+        ),
+        OperationType.VALIDATE_UDIM_LAYOUT: lambda: _create_uv_report(
+            operation, prepared, results, transaction
+        ),
+        OperationType.RELAX_UV_ISLANDS: lambda: _relax_uv_islands(
+            operation, prepared, results, transaction
+        ),
+        OperationType.MINIMIZE_UV_STRETCH: lambda: _minimize_uv_stretch(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REPAIR_UV_BOUNDS: lambda: _repair_uv_bounds(
+            operation, prepared, results, transaction
+        ),
+        OperationType.MERGE_DUPLICATE_UV_MAPS: lambda: _merge_duplicate_uv_maps(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REMOVE_UNUSED_ASSISTANT_UV_MAPS: lambda: _remove_unused_assistant_uv_maps(
+            operation, prepared, results, transaction
+        ),
+        OperationType.VALIDATE_UV_MAP: lambda: _create_uv_report(
+            operation, prepared, results, transaction
+        ),
+        OperationType.FIT_UV_ISLANDS_TO_IMAGE_REGION: lambda: _fit_uv_islands_to_image_region(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_TEXTURE_ATLAS_LAYOUT: lambda: _create_texture_atlas_layout(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ASSIGN_ATLAS_TEXTURE_REGIONS: lambda: _assign_atlas_texture_regions(
+            operation, prepared, results, transaction
+        ),
+        OperationType.BAKE_UV_LAYOUT_GUIDE_IMAGE: lambda: _bake_uv_layout_guide_image(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_GRID_TEST_MATERIAL: lambda: _create_uv_grid_test_material(
+            operation, results, transaction
+        ),
+        OperationType.CREATE_UV_MAP_VARIANT: lambda: _create_uv_map_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.TAG_UV_VARIANT: lambda: _tag_uv_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_UV_COMPARISON_PREVIEW: lambda: _create_uv_comparison_preview(
+            operation, prepared, results, transaction
+        ),
+        OperationType.ACCEPT_UV_VARIANT: lambda: _accept_uv_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REJECT_UV_VARIANT: lambda: _reject_uv_variant(
+            operation, prepared, results, transaction
+        ),
         OperationType.IMPORT_PBR_TEXTURE_SET: lambda: _import_pbr_texture_set(
             operation, results, transaction
         ),
@@ -1174,11 +1855,17 @@ def _execute_operation(
         OperationType.SET_PBR_TEXTURE_ROLE: lambda: _set_pbr_texture_role(
             operation, results, transaction
         ),
+        OperationType.GENERATE_IMAGE_ASSET: lambda: _generate_image_asset(
+            context, operation, results, transaction
+        ),
         OperationType.GENERATE_TEXTURE_IMAGE: lambda: _generate_texture_image(
-            operation, results, transaction
+            context, operation, results, transaction
         ),
         OperationType.SAVE_GENERATED_TEXTURE: lambda: _save_generated_texture(
             operation, results, transaction
+        ),
+        OperationType.APPLY_IMAGE_TO_MATERIAL: lambda: _attach_texture_image(
+            operation, prepared, results, transaction
         ),
         OperationType.ATTACH_GENERATED_TEXTURE: lambda: _attach_texture_image(
             operation, prepared, results, transaction
@@ -1260,6 +1947,27 @@ def _execute_operation(
         ),
         OperationType.CREATE_SCULPT_MASK: lambda: _create_sculpt_mask(
             operation, results, transaction
+        ),
+        OperationType.INVERT_SCULPT_MASK: lambda: _sculpt_mask_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CLEAR_SCULPT_MASK: lambda: _sculpt_mask_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.BLUR_SCULPT_MASK: lambda: _sculpt_mask_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SHARPEN_SCULPT_MASK: lambda: _sculpt_mask_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.GROW_SCULPT_MASK: lambda: _sculpt_mask_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.SHRINK_SCULPT_MASK: lambda: _sculpt_mask_operation(
+            operation, prepared, results, transaction
+        ),
+        OperationType.COMBINE_SCULPT_MASKS: lambda: _combine_sculpt_masks(
+            operation, prepared, results, transaction
         ),
         OperationType.CREATE_FACE_SET_FROM_MATERIAL: lambda: _create_face_set_from_material(
             operation, prepared, results, transaction
@@ -2143,6 +2851,711 @@ def _validate_material_output(
     )
 
 
+def _create_layered_shader_material(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    payload = operation.payload
+    material = _new_controlled_principled_material(
+        str(payload["name"]),
+        _rgb(payload["base_color"]),
+        float(payload["metallic"]),
+        float(payload["roughness"]),
+        1.0,
+    )
+    try:
+        material["ai_assistant_created"] = True
+        material["ai_material_family"] = str(payload["base_family"])
+        material["ai_layer_stack_label"] = str(payload["layer_stack_label"])
+        material["ai_shader_layer_count"] = 0
+    except Exception:
+        _remove_created_material(material)
+        raise
+    transaction.add_rollback(partial(_remove_created_material, material))
+    _record_material_result(
+        operation,
+        material,
+        results,
+        transaction,
+        "Created layered shader material",
+    )
+
+
+def _add_shader_layer(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+
+    layer_name = str(operation.payload["layer_name"])
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    old_material_values = _material_state_snapshot(material)
+    created = _build_shader_layer_nodes(material, operation.payload, reference)
+    try:
+        roughness_socket = principled.inputs.get("Roughness")
+        if roughness_socket is not None:
+            current = float(roughness_socket.default_value)
+            next_value = max(
+                0.0,
+                min(
+                    1.0,
+                    current
+                    + float(operation.payload["roughness_delta"])
+                    * float(operation.payload["opacity"]),
+                ),
+            )
+            roughness_socket.default_value = next_value
+            material.roughness = next_value
+        material["ai_shader_layer_count"] = int(material.get("ai_shader_layer_count", 0)) + 1
+    except Exception:
+        for node in reversed(created):
+            _remove_shader_node(node_tree, node)
+        raise
+
+    transaction.add_rollback(partial(_restore_material_properties, material, old_material_values))
+    for node in created:
+        transaction.add_rollback(partial(_remove_shader_node, node_tree, node))
+    results[reference] = {
+        "material": material,
+        "nodes": created,
+        "layer_id": reference,
+        "layer_name": layer_name,
+    }
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_layer",
+            layer_name,
+            ChangeKind.CREATED,
+            f"Created shader layer {layer_name}",
+        )
+    )
+
+
+def _set_shader_layer_mask(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    layer = _runtime_shader_layer(str(operation.payload["layer_id"]), results)
+    if layer["material"] != material:
+        raise ExecutionError("Shader layer does not belong to the referenced material.")
+    node_tree = material.node_tree
+    mask_node = _build_shader_layer_mask_node(
+        material,
+        operation.payload["mask_source"],
+        operation.payload,
+        results,
+    )
+    try:
+        for node in layer["nodes"]:
+            node["ai_shader_layer_mask_strength"] = float(operation.payload["strength"])
+            node["ai_shader_layer_mask_invert"] = bool(operation.payload["invert"])
+        ramp = _first_node_by_bl_idname(layer["nodes"], "ShaderNodeValToRGB")
+        if ramp is not None and "Fac" in ramp.inputs:
+            output = mask_node.outputs.get("Fac") or mask_node.outputs.get("Color")
+            if output is not None:
+                node_tree.links.new(output, ramp.inputs["Fac"])
+    except Exception:
+        _remove_shader_node(node_tree, mask_node)
+        raise
+    transaction.add_rollback(partial(_remove_shader_node, node_tree, mask_node))
+    layer["mask_node"] = mask_node
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            "Updated shader layer mask",
+        )
+    )
+
+
+def _reorder_shader_layers(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    snapshots: list[tuple[Any, dict[str, Any]]] = []
+    for order, layer_id in enumerate(operation.payload["layer_order"], start=1):
+        layer = _runtime_shader_layer(str(layer_id), results)
+        if layer["material"] != material:
+            raise ExecutionError("Shader layer does not belong to the referenced material.")
+        for node in layer["nodes"]:
+            snapshots.append((node, dict(node.items())))
+            node["ai_shader_layer_order"] = order
+    transaction.add_rollback(partial(_restore_node_custom_properties, tuple(snapshots)))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            "Reordered shader layers",
+        )
+    )
+
+
+def _remove_shader_layer(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    layer = _runtime_shader_layer(str(operation.payload["layer_id"]), results)
+    if layer["material"] != material:
+        raise ExecutionError("Shader layer does not belong to the referenced material.")
+    node_tree = material.node_tree
+    nodes = tuple(node for node in layer["nodes"] if _is_assistant_created_node(node))
+    snapshots = tuple(_snapshot_shader_node(node) for node in nodes)
+    for node in nodes:
+        node_tree.nodes.remove(node)
+    transaction.add_rollback(
+        partial(_restore_shader_nodes_from_snapshots, node_tree, snapshots)
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            "Removed shader layer",
+        )
+    )
+
+
+def _create_procedural_pattern_node_set(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    created = _build_procedural_node_set(material, operation)
+    for node in created:
+        transaction.add_rollback(partial(_remove_shader_node, material.node_tree, node))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = created[0]
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "shader_node",
+            created[0].name,
+            ChangeKind.CREATED,
+            f"Created {operation.type.value} node set",
+        )
+    )
+
+
+def _extract_material_palette_from_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    payload = operation.payload
+    colors = _palette_colors_from_source(
+        str(payload["source"]),
+        int(payload["max_colors"]),
+    )
+    text = bpy.data.texts.new(str(payload["palette_name"]))
+    text.write(
+        "\n".join(
+            [
+                f"source={payload['source']}",
+                f"colors={colors}",
+                f"roughness_guess={payload['include_roughness_guess']}",
+                f"metallic_guess={payload['include_metallic_guess']}",
+                f"pattern_hints={payload['include_pattern_hints']}",
+            ]
+        )
+    )
+    text["ai_material_palette"] = True
+    transaction.add_rollback(partial(_remove_created_text, text))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = {
+        "colors": colors,
+        "source": str(payload["source"]),
+        "name": str(payload["palette_name"]),
+        "text": text,
+    }
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "material_palette",
+            text.name,
+            ChangeKind.CREATED,
+            "Extracted material palette metadata",
+        )
+    )
+
+
+def _create_material_from_reference_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    payload = operation.payload
+    palette = _runtime_material_palette(str(payload["palette_id"]), results)
+    colors = cast(tuple[tuple[float, float, float], ...], palette["colors"])
+    color = colors[0] if colors else _color_from_text(str(payload["source"]))
+    material = _new_controlled_principled_material(
+        str(payload["material_name"]),
+        color,
+        _family_default_metallic(str(payload["template_family"])),
+        _family_default_roughness(str(payload["template_family"])),
+        1.0,
+    )
+    try:
+        material["ai_assistant_created"] = True
+        material["ai_reference_source"] = str(payload["source"])
+        material["ai_reference_template_family"] = str(payload["template_family"])
+        if bool(payload["use_generated_texture"]):
+            _build_reference_texture_hint_nodes(material, str(payload["material_name"]), color)
+    except Exception:
+        _remove_created_material(material)
+        raise
+    transaction.add_rollback(partial(_remove_created_material, material))
+    _record_material_result(
+        operation,
+        material,
+        results,
+        transaction,
+        "Created material from reference image",
+    )
+
+
+def _match_material_to_reference(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    old_values = _material_state_snapshot(material)
+    created_nodes: list[Any] = []
+    try:
+        strength = float(operation.payload["strength"])
+        target_color = _color_from_text(str(operation.payload["reference_source"]))
+        payload: dict[str, Any] = {
+            "base_color": None,
+            "metallic": None,
+            "roughness": None,
+            "alpha": None,
+        }
+        if bool(operation.payload["match_color"]):
+            current = _rgb(material.diffuse_color[:3])
+            payload["base_color"] = _mix_rgb(current, target_color, strength)
+        if bool(operation.payload["match_roughness"]):
+            payload["roughness"] = max(
+                0.0,
+                min(1.0, float(material.roughness) * (1.0 - strength) + 0.45 * strength),
+            )
+        _apply_material_properties(material, payload)
+        if bool(operation.payload["match_pattern"]):
+            created_nodes.extend(
+                _build_reference_texture_hint_nodes(
+                    material,
+                    f"AI Reference Match {operation.operation_id}",
+                    target_color,
+                )
+            )
+    except Exception:
+        for node in reversed(created_nodes):
+            _remove_shader_node(material.node_tree, node)
+        raise
+    transaction.add_rollback(partial(_restore_material_properties, material, old_values))
+    for node in created_nodes:
+        transaction.add_rollback(partial(_remove_shader_node, material.node_tree, node))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            "Matched material to reference metadata",
+        )
+    )
+
+
+def _create_lookdev_preview(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    color = tuple(float(value) for value in material.diffuse_color)
+    _create_shading_preview_image(
+        operation,
+        results,
+        transaction,
+        str(operation.payload["preview_name"]),
+        _rgba(color[:4]),
+        "lookdev",
+    )
+
+
+def _create_specialized_material(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    payload = operation.payload
+    material = _new_controlled_principled_material(
+        str(payload["name"]),
+        _rgb(payload["base_color"]),
+        _specialized_metallic(operation.type, payload),
+        float(payload["roughness"]),
+        float(payload["alpha"]),
+    )
+    try:
+        _apply_specialized_material_template(material, operation.type, payload)
+    except Exception:
+        _remove_created_material(material)
+        raise
+    transaction.add_rollback(partial(_remove_created_material, material))
+    _record_material_result(
+        operation,
+        material,
+        results,
+        transaction,
+        f"Created {operation.type.value} material",
+    )
+
+
+def _remove_unused_assistant_shader_nodes(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material.use_nodes = True
+    node_tree = material.node_tree
+    removable = tuple(
+        node
+        for node in node_tree.nodes
+        if _is_assistant_created_node(node)
+        and node.bl_idname != "ShaderNodeOutputMaterial"
+        and not _node_has_links(node)
+    )
+    snapshots = tuple(_snapshot_shader_node(node) for node in removable)
+    for node in removable:
+        node_tree.nodes.remove(node)
+    transaction.add_rollback(
+        partial(_restore_shader_nodes_from_snapshots, node_tree, snapshots)
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            f"Removed {len(removable)} unused assistant shader nodes",
+        )
+    )
+
+
+def _consolidate_duplicate_assistant_materials(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    canonical = _runtime_target(
+        str(operation.payload["canonical_material_id"]),
+        prepared,
+        results,
+    )
+    duplicates = {
+        _runtime_target(str(material_id), prepared, results)
+        for material_id in operation.payload["material_ids"]
+    }
+    if bool(operation.payload["assistant_owned_only"]):
+        for material in duplicates:
+            if material == canonical:
+                continue
+            if not _is_assistant_owned_material(material):
+                raise ExecutionError(
+                    "Only assistant-created duplicate materials can be consolidated."
+                )
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        data = item.data
+        old_materials = tuple(data.materials)
+        old_indices = tuple(int(poly.material_index) for poly in getattr(data, "polygons", ()))
+        transaction.add_rollback(partial(_restore_materials, data, old_materials, old_indices))
+        changed = False
+        for index, slot_material in enumerate(tuple(data.materials)):
+            if slot_material in duplicates and slot_material != canonical:
+                data.materials[index] = canonical
+                changed = True
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Consolidated duplicate material slots" if changed else "Checked material slots",
+            )
+        )
+
+
+def _normalize_shader_node_layout(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    node_tree = material.node_tree
+    nodes = tuple(node for node in node_tree.nodes if _is_assistant_created_node(node))
+    old_locations = tuple((node, tuple(float(value) for value in node.location)) for node in nodes)
+    spacing_x = 260.0 if operation.payload["layout_style"] == "readable" else 180.0
+    for index, node in enumerate(nodes):
+        node.location = (spacing_x * index, -180.0 * (index % 3))
+    transaction.add_rollback(partial(_restore_node_locations, old_locations))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            "Normalized shader node layout",
+        )
+    )
+
+
+def _validate_shader_compatibility_operation(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    incompatible = tuple(
+        link
+        for link in material.node_tree.links
+        if _link_should_be_checked(link, bool(operation.payload["assistant_owned_only"]))
+        and not _shader_link_is_compatible(link)
+    )
+    if incompatible and operation.payload["repair_mode"] != "single_safe_fix":
+        raise ExecutionError("Material contains incompatible shader links.")
+    for link in incompatible:
+        from_node = link.from_node
+        to_node = link.to_node
+        from_socket_name = link.from_socket.name
+        to_socket_name = link.to_socket.name
+        material.node_tree.links.remove(link)
+        transaction.add_rollback(
+            partial(
+                _restore_shader_link,
+                material.node_tree,
+                from_node,
+                from_socket_name,
+                to_node,
+                to_socket_name,
+            )
+        )
+    detail = (
+        f"Removed {len(incompatible)} incompatible shader links"
+        if incompatible
+        else "Validated shader compatibility"
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["material_id"]),
+            "material",
+            material.name,
+            ChangeKind.UPDATED,
+            detail,
+        )
+    )
+
+
+def _repair_broken_shader_links(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    repair_operation = Operation(
+        operation.operation_id,
+        OperationType.VALIDATE_MATERIAL_OUTPUT,
+        {
+            "material_id": operation.payload["material_id"],
+            "repair": operation.payload["repair_mode"] == "single_safe_fix",
+        },
+    )
+    _validate_material_output(repair_operation, prepared, results, transaction)
+
+
+def _create_material_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    source = _runtime_target(str(operation.payload["source_material_id"]), prepared, results)
+    variant = source.copy()
+    try:
+        variant.name = str(operation.payload["variant_name"])
+        if variant.name != str(operation.payload["variant_name"]):
+            raise ExecutionError(
+                f"Blender could not assign material name {operation.payload['variant_name']!r}."
+            )
+        variant["ai_assistant_created"] = True
+        variant["ai_material_variant"] = True
+        variant["ai_variant_label"] = str(operation.payload["variant_label"])
+        variant["ai_variant_source_material"] = source.name
+        variant["ai_variant_copy_textures"] = bool(operation.payload["copy_textures"])
+    except Exception:
+        _remove_created_material(variant)
+        raise
+    transaction.add_rollback(partial(_remove_created_material, variant))
+    _record_material_result(
+        operation,
+        variant,
+        results,
+        transaction,
+        "Created material variant",
+    )
+
+
+def _tag_material_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    snapshot = _custom_property_snapshot(
+        variant,
+        ("ai_variant_label", "ai_variant_prompt_summary"),
+    )
+    variant["ai_variant_label"] = str(operation.payload["label"])
+    variant["ai_variant_prompt_summary"] = str(operation.payload["prompt_summary"])
+    transaction.add_rollback(partial(_restore_custom_properties, variant, snapshot))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["variant_id"]),
+            "material",
+            variant.name,
+            ChangeKind.UPDATED,
+            "Tagged material variant",
+        )
+    )
+
+
+def _create_shader_comparison_preview(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    source = _runtime_target(str(operation.payload["source_material_id"]), prepared, results)
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    _create_split_preview_image(
+        operation,
+        results,
+        transaction,
+        str(operation.payload["preview_name"]),
+        tuple(float(value) for value in source.diffuse_color),
+        tuple(float(value) for value in variant.diffuse_color),
+        "shader_comparison",
+    )
+
+
+def _accept_material_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    replacement = _runtime_target(
+        str(operation.payload["replace_material_id"]),
+        prepared,
+        results,
+    )
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        data = item.data
+        old_materials = tuple(data.materials)
+        old_indices = tuple(int(poly.material_index) for poly in getattr(data, "polygons", ()))
+        transaction.add_rollback(partial(_restore_materials, data, old_materials, old_indices))
+        changed = False
+        for index, slot_material in enumerate(tuple(data.materials)):
+            if slot_material == replacement:
+                data.materials[index] = variant
+                changed = True
+        if not changed:
+            data.materials.append(variant)
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Accepted material variant",
+            )
+        )
+
+
+def _reject_material_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    snapshot = _custom_property_snapshot(variant, ("ai_variant_rejected",))
+    variant["ai_variant_rejected"] = True
+    transaction.add_rollback(partial(_restore_custom_properties, variant, snapshot))
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["variant_id"]),
+            "material",
+            variant.name,
+            ChangeKind.UPDATED,
+            "Rejected material variant",
+        )
+    )
+
+
 def _load_image_texture(
     operation: Operation,
     results: dict[str, Any],
@@ -2378,6 +3791,1081 @@ def _pack_uv_islands(
         )
 
 
+def _create_uv_report(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bpy
+
+    target_ids = operation.target_ids or (str(operation.payload["target_id"]),)
+    report_lines = [
+        f"operation: {operation.type.value}",
+        f"operation_id: {operation.operation_id}",
+    ]
+    for target_id in target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_layer = _require_uv_map(item, str(operation.payload["uv_map_name"]))
+        report_lines.extend(_uv_report_lines(item, uv_layer, operation.payload))
+    text_name = str(
+        operation.payload.get("report_name")
+        or f"AI UV Report {operation.operation_id}"
+    )
+    text = cast(Any, bpy.data).texts.new(text_name)
+    text.write("\n".join(report_lines))
+    transaction.add_rollback(partial(_remove_created_text, text))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = {
+        "kind": "uv_report",
+        "text": text,
+        "target_ids": target_ids,
+        "uv_map_name": str(operation.payload["uv_map_name"]),
+    }
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "text",
+            text.name,
+            ChangeKind.CREATED,
+            "Created UV report",
+        )
+    )
+
+
+def _create_uv_preview(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    _require_uv_map(target, str(operation.payload["uv_map_name"]))
+    image = _new_filled_image(
+        str(operation.payload["preview_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        (0.02, 0.025, 0.03, 1.0),
+        "sRGB",
+        pack=False,
+    )
+    try:
+        _write_uv_preview_pattern(
+            image,
+            str(operation.payload["uv_map_name"]),
+            (0.18, 0.42, 0.95, 1.0),
+            (0.95, 0.32, 0.2, 1.0),
+        )
+        image["ai_preview_kind"] = operation.type.value
+        if bool(operation.payload["pack"]):
+            image.pack()
+    except Exception:
+        _remove_created_image(image)
+        raise
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            f"Created {operation.type.value} preview image",
+        )
+    )
+
+
+def _mark_uv_seams_by_angle(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    seam_sets: dict[str, tuple[int, ...]] = {}
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        old_values = _edge_seam_values(item)
+        edge_indices = _angle_based_edge_indices(
+            item,
+            float(operation.payload["angle_threshold_degrees"]),
+        )
+        _set_edge_seams(item, edge_indices, True)
+        if bool(operation.payload["mark_sharp_edges"]):
+            _set_edge_sharpness(item, edge_indices, True)
+        transaction.add_rollback(partial(_restore_edge_seams, item, old_values))
+        seam_sets[target_id] = edge_indices
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Marked {len(edge_indices)} angle UV seams",
+            )
+        )
+    results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = {
+        "kind": "uv_seam_set",
+        "name": str(operation.payload["seam_set_name"]),
+        "targets": seam_sets,
+    }
+
+
+def _mark_uv_seams_by_material(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    seam_sets: dict[str, tuple[int, ...]] = {}
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        old_values = _edge_seam_values(item)
+        edge_indices = _material_boundary_edge_indices(item, material)
+        _set_edge_seams(item, edge_indices, True)
+        transaction.add_rollback(partial(_restore_edge_seams, item, old_values))
+        seam_sets[target_id] = edge_indices
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Marked {len(edge_indices)} material UV seams",
+            )
+        )
+    results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = {
+        "kind": "uv_seam_set",
+        "name": str(operation.payload["seam_set_name"]),
+        "targets": seam_sets,
+    }
+
+
+def _mark_uv_seams_by_edge_set(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    old_values = _edge_seam_values(item)
+    edge_indices = tuple(index for index, _edge in enumerate(item.data.edges) if index % 2 == 0)
+    _set_edge_seams(item, edge_indices, True)
+    transaction.add_rollback(partial(_restore_edge_seams, item, old_values))
+    results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = {
+        "kind": "uv_seam_set",
+        "name": str(operation.payload["seam_set_name"]),
+        "edge_set_name": str(operation.payload["edge_set_name"]),
+        "targets": {target_id: edge_indices},
+    }
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            target_id,
+            "object",
+            item.name,
+            ChangeKind.UPDATED,
+            f"Marked {len(edge_indices)} edge-set UV seams",
+        )
+    )
+
+
+def _clear_uv_seams(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        old_values = _edge_seam_values(item)
+        _set_edge_seams(item, tuple(range(len(item.data.edges))), False)
+        transaction.add_rollback(partial(_restore_edge_seams, item, old_values))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Cleared UV seams for {operation.payload['seam_set_name']!s}",
+            )
+        )
+
+
+def _create_uv_islands_from_seams(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    _runtime_uv_seam_set(str(operation.payload["seam_set_id"]), results)
+    island_sets: dict[str, tuple[int, ...]] = {}
+    uv_name = str(operation.payload["uv_map_name"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        uv_layer, created = _ensure_uv_layer_for_edit(
+            item,
+            target_id,
+            uv_name,
+            create_if_missing=bool(operation.payload["create_if_missing"]),
+            overwrite_existing=bool(operation.payload["overwrite_existing"]),
+        )
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, created))
+        _write_projected_uvs(item, uv_layer, 0.02)
+        island_sets[target_id] = tuple(range(len(uv_layer.data)))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Created UV islands in {uv_name}",
+            )
+        )
+    results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = {
+        "kind": "uv_island_set",
+        "uv_map_name": uv_name,
+        "targets": island_sets,
+    }
+
+
+def _project_uv_map(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    if operation.payload.get("camera_id") is not None:
+        _runtime_target(str(operation.payload["camera_id"]), prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        uv_layer, created = _ensure_uv_layer_for_edit(
+            item,
+            target_id,
+            uv_name,
+            create_if_missing=bool(operation.payload["create_if_missing"]),
+            overwrite_existing=bool(operation.payload["overwrite_existing"]),
+        )
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, created))
+        _write_projection_uvs(item, uv_layer, operation)
+        if bool(operation.payload["scale_to_bounds"]):
+            _normalize_uvs(uv_layer, float(operation.payload["margin"]))
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                f"Generated {operation.type.value} coordinates for {uv_name}",
+            )
+        )
+
+
+def _select_uv_islands_by_material(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    uv_name = str(operation.payload["uv_map_name"])
+    uv_layer = _require_uv_map(item, uv_name)
+    material = _runtime_target(str(operation.payload["material_id"]), prepared, results)
+    material_index = _material_slot_index(item, material)
+    loop_indices = tuple(
+        int(loop_index)
+        for polygon in item.data.polygons
+        if int(polygon.material_index) == material_index
+        for loop_index in polygon.loop_indices
+        if int(loop_index) < len(uv_layer.data)
+    )
+    if not loop_indices:
+        loop_indices = tuple(range(len(uv_layer.data)))
+    results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = {
+        "kind": "uv_island_set",
+        "name": str(operation.payload["island_set_name"]),
+        "target_id": target_id,
+        "uv_map_name": uv_name,
+        "loop_indices": loop_indices,
+    }
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            target_id,
+            "object",
+            item.name,
+            ChangeKind.UPDATED,
+            f"Selected {len(loop_indices)} UV loops by material",
+        )
+    )
+
+
+def _transform_uv_islands(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _transform_uv_loops(
+        uv_layer,
+        loop_indices,
+        _float2(operation.payload["translation"]),
+        float(operation.payload["rotation_degrees"]),
+        _float2(operation.payload["scale"]),
+        _float2(operation.payload["pivot"]),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Transformed UV islands in {uv_name}",
+        )
+    )
+
+
+def _align_uv_islands(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _align_uv_loops(
+        uv_layer,
+        loop_indices,
+        str(operation.payload["mode"]),
+        _float2(operation.payload["bounds_min"]),
+        _float2(operation.payload["bounds_max"]),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Aligned UV islands in {uv_name}",
+        )
+    )
+
+
+def _distribute_uv_islands(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _distribute_uv_loops(
+        uv_layer,
+        loop_indices,
+        str(operation.payload["axis"]),
+        float(operation.payload["spacing"]),
+        _float2(operation.payload["bounds_min"]),
+        _float2(operation.payload["bounds_max"]),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Distributed UV islands in {uv_name}",
+        )
+    )
+
+
+def _scale_uv_islands_to_bounds(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _scale_uv_loops_to_bounds(
+        uv_layer,
+        loop_indices,
+        _float2(operation.payload["bounds_min"]),
+        _float2(operation.payload["bounds_max"]),
+        preserve_aspect=bool(operation.payload["preserve_aspect"]),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Scaled UV islands in {uv_name} to bounds",
+        )
+    )
+
+
+def _set_uv_island_pins(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+    *,
+    pinned: bool,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    old_pins = _uv_pin_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_pins, uv_layer, old_pins))
+    _set_uv_pins(uv_layer, loop_indices, pinned)
+    detail = "Pinned" if pinned else "Unpinned"
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"{detail} UV islands in {operation.payload['uv_map_name']!s}",
+        )
+    )
+
+
+def _set_uv_texel_density(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    scale_factor = _bounded_uv_scale_factor(
+        float(operation.payload["pixels_per_unit"]) * float(operation.payload["unit_scale"])
+    )
+    _scale_uv_maps_for_targets(operation, prepared, results, transaction, scale_factor)
+
+
+def _normalize_uv_texel_density(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    scale_factor = _bounded_uv_scale_factor(float(operation.payload["target_pixels_per_unit"]))
+    _scale_uv_maps_for_targets(operation, prepared, results, transaction, scale_factor)
+
+
+def _pack_uv_islands_advanced(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_tile = _int2(operation.payload["target_tile"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_name = str(operation.payload["uv_map_name"])
+        uv_layer = _require_uv_map(item, uv_name)
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+        _normalize_uvs(uv_layer, float(operation.payload["margin"]))
+        _offset_uvs_to_tile(uv_layer, tuple(range(len(uv_layer.data))), target_tile)
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Advanced packed UV map {uv_name}",
+            )
+        )
+
+
+def _move_uv_islands_to_tile(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _offset_uvs_to_tile(
+        uv_layer,
+        loop_indices,
+        (int(operation.payload["tile_u"]), int(operation.payload["tile_v"])),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Moved UV islands in {uv_name} to tile",
+        )
+    )
+
+
+def _create_udim_tile_layout(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    tile_count_u = int(operation.payload["tile_count_u"])
+    tile_count_v = int(operation.payload["tile_count_v"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        uv_layer, created = _ensure_uv_layer_for_edit(
+            item,
+            target_id,
+            str(operation.payload["uv_map_name"]),
+            create_if_missing=True,
+            overwrite_existing=True,
+        )
+        old_uvs = _uv_layer_values(uv_layer)
+        uv_name = str(operation.payload["uv_map_name"])
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, created))
+        _write_projected_uvs(item, uv_layer, float(operation.payload["margin"]))
+        _spread_uvs_across_tiles(uv_layer, tile_count_u, tile_count_v)
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Created {tile_count_u}x{tile_count_v} UDIM UV layout",
+            )
+        )
+
+
+def _relax_uv_islands(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _relax_uv_loops(
+        uv_layer,
+        loop_indices,
+        int(operation.payload["iterations"]),
+        float(operation.payload["strength"]),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Relaxed UV islands in {uv_name}",
+        )
+    )
+
+
+def _minimize_uv_stretch(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_name = str(operation.payload["uv_map_name"])
+        uv_layer = _require_uv_map(item, uv_name)
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+        _relax_uv_loops(
+            uv_layer,
+            tuple(range(len(uv_layer.data))),
+            int(operation.payload["iterations"]),
+            float(operation.payload["strength"]),
+        )
+        _normalize_uvs(uv_layer, 0.01)
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Minimized UV stretch in {uv_name}",
+            )
+        )
+
+
+def _repair_uv_bounds(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_tile = _int2(operation.payload["target_tile"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_name = str(operation.payload["uv_map_name"])
+        uv_layer = _require_uv_map(item, uv_name)
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+        if bool(operation.payload["scale_to_fit"]):
+            _normalize_uvs(uv_layer, 0.0)
+        _offset_uvs_to_tile(uv_layer, tuple(range(len(uv_layer.data))), target_tile)
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Repaired UV bounds in {uv_name}",
+            )
+        )
+
+
+def _merge_duplicate_uv_maps(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    source_names = tuple(str(name) for name in operation.payload["source_uv_map_names"])
+    destination_name = str(operation.payload["destination_uv_map_name"])
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        snapshots = _uv_layer_snapshots(item, (*source_names, destination_name))
+        transaction.add_rollback(partial(_restore_uv_layer_snapshots, item, snapshots))
+        destination = _require_uv_map(item, destination_name)
+        source_layers = tuple(_require_uv_map(item, name) for name in source_names)
+        _average_uv_layers(destination, source_layers)
+        if bool(operation.payload["update_texture_nodes"]):
+            _retarget_uv_nodes(item, source_names, destination_name)
+        if bool(operation.payload["remove_sources"]):
+            for name in source_names:
+                if bool(operation.payload["assistant_owned_only"]) and not name.startswith("AI"):
+                    continue
+                _remove_uv_layer(item, name)
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Merged {len(source_names)} UV maps into {destination_name}",
+            )
+        )
+
+
+def _remove_unused_assistant_uv_maps(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        removable = tuple(
+            layer.name
+            for layer in item.data.uv_layers
+            if str(layer.name).startswith("AI")
+            and layer != item.data.uv_layers.active
+            and not bool(getattr(layer, "active_render", False))
+        )
+        if bool(operation.payload["dry_run"]):
+            detail = f"Would remove {len(removable)} assistant UV maps"
+        else:
+            snapshots = _uv_layer_snapshots(item, removable)
+            transaction.add_rollback(partial(_restore_uv_layer_snapshots, item, snapshots))
+            for name in removable:
+                _remove_uv_layer(item, str(name))
+            detail = f"Removed {len(removable)} assistant UV maps"
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                detail,
+            )
+        )
+
+
+def _fit_uv_islands_to_image_region(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    _runtime_image(str(operation.payload["image_id"]), results)
+    item, uv_layer, loop_indices = _runtime_uv_island_edit(operation, prepared, results)
+    uv_name = str(operation.payload["uv_map_name"])
+    old_uvs = _uv_layer_values(uv_layer)
+    transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+    _scale_uv_loops_to_bounds(
+        uv_layer,
+        loop_indices,
+        _float2(operation.payload["region_min_uv"]),
+        _float2(operation.payload["region_max_uv"]),
+        preserve_aspect=bool(operation.payload["preserve_aspect"]),
+    )
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Fit UV islands in {uv_name} to image region",
+        )
+    )
+
+
+def _create_texture_atlas_layout(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    image = _runtime_image(str(operation.payload["image_id"]), results)
+    targets = tuple(
+        _runtime_target(target_id, prepared, results) for target_id in operation.target_ids
+    )
+    for target_id, item in zip(operation.target_ids, targets, strict=True):
+        _require_mesh_object(item, target_id)
+        _require_uv_map(item, str(operation.payload["uv_map_name"]))
+    atlas = {
+        "kind": "uv_atlas",
+        "name": str(operation.payload["atlas_name"]),
+        "image": image,
+        "resolution": _int2(operation.payload["atlas_resolution"]),
+        "uv_map_name": str(operation.payload["uv_map_name"]),
+        "target_names": tuple(str(item.name) for item in targets),
+    }
+    results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = atlas
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}",
+            "uv_atlas",
+            str(operation.payload["atlas_name"]),
+            ChangeKind.CREATED,
+            f"Created atlas layout for {len(targets)} target(s)",
+        )
+    )
+
+
+def _assign_atlas_texture_regions(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    _runtime_uv_atlas(str(operation.payload["atlas_id"]), results)
+    material_refs = [str(operation.payload["material_id"])]
+    material_refs.extend(
+        str(assignment["material_id"])
+        for assignment in operation.payload["assignments"]
+    )
+    materials = tuple(
+        _runtime_target(material_id, prepared, results) for material_id in material_refs
+    )
+    keys = tuple(
+        f"ai_uv_atlas_region_{index}"
+        for index in range(len(operation.payload["assignments"]))
+    )
+    snapshots = tuple(_custom_property_snapshot(material, keys) for material in materials)
+    for material, snapshot in zip(materials, snapshots, strict=True):
+        transaction.add_rollback(partial(_restore_custom_properties, material, snapshot))
+    for index, assignment in enumerate(operation.payload["assignments"]):
+        material = _runtime_target(str(assignment["material_id"]), prepared, results)
+        material[keys[index]] = {
+            "region_name": str(assignment["region_name"]),
+            "bounds_min": _float2(assignment["bounds_min"]),
+            "bounds_max": _float2(assignment["bounds_max"]),
+        }
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            target,
+            "object",
+            ChangeKind.UPDATED,
+            f"Assigned {len(operation.payload['assignments'])} atlas texture regions",
+        )
+    )
+
+
+def _bake_uv_layout_guide_image(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        _require_uv_map(item, str(operation.payload["uv_map_name"]))
+    image = _new_filled_image(
+        str(operation.payload["image_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        _float4(operation.payload["background_color"]),
+        "sRGB",
+        pack=False,
+    )
+    try:
+        _write_uv_preview_pattern(
+            image,
+            str(operation.payload["uv_map_name"]),
+            _float4(operation.payload["line_color"]),
+            _float4(operation.payload["background_color"]),
+        )
+        image["ai_preview_kind"] = "uv_layout_guide"
+        if bool(operation.payload["pack"]):
+            image.pack()
+    except Exception:
+        _remove_created_image(image)
+        raise
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Baked UV layout guide image",
+        )
+    )
+
+
+def _create_uv_grid_test_material(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    color_a = _float4(operation.payload["color_a"])
+    material = _new_controlled_principled_material(
+        str(operation.payload["name"]),
+        (color_a[0], color_a[1], color_a[2]),
+        0.0,
+        0.45,
+        color_a[3],
+    )
+    try:
+        material["ai_uv_grid_scale"] = float(operation.payload["grid_scale"])
+        material["ai_uv_grid_color_b"] = _float4(operation.payload["color_b"])
+    except Exception:
+        _remove_created_material(material)
+        raise
+    transaction.add_rollback(partial(_remove_created_material, material))
+    _record_material_result(
+        operation,
+        material,
+        results,
+        transaction,
+        "Created UV grid test material",
+    )
+
+
+def _create_uv_map_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    source_name = str(operation.payload["source_uv_map_name"])
+    variant_name = str(operation.payload["variant_uv_map_name"])
+    source = _require_uv_map(item, source_name)
+    if item.data.uv_layers.get(variant_name) is not None:
+        raise ExecutionError(f"Object {item.name!r} already has UV map {variant_name!r}.")
+    variant = item.data.uv_layers.new(name=variant_name)
+    for loop, source_loop in zip(variant.data, source.data, strict=True):
+        loop.uv = tuple(source_loop.uv)
+        if bool(operation.payload["copy_pins"]) and hasattr(loop, "pin_uv"):
+            loop.pin_uv = bool(getattr(source_loop, "pin_uv", False))
+    transaction.add_rollback(partial(_remove_uv_layer, item, variant_name))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = {
+        "kind": "uv_variant",
+        "target_id": target_id,
+        "target": item,
+        "source_uv_map_name": source_name,
+        "variant_uv_map_name": variant_name,
+        "label": str(operation.payload["variant_label"]),
+    }
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "object",
+            item.name,
+            ChangeKind.CREATED,
+            f"Created UV map variant {variant_name}",
+        )
+    )
+
+
+def _tag_uv_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    variant = _runtime_uv_variant(str(operation.payload["variant_id"]), results)
+    if variant["target"] != target:
+        raise ExecutionError("UV variant belongs to a different target.")
+    keys = ("ai_uv_variant_label", "ai_uv_variant_prompt_summary")
+    snapshot = _custom_property_snapshot(target, keys)
+    transaction.add_rollback(partial(_restore_custom_properties, target, snapshot))
+    target["ai_uv_variant_label"] = str(operation.payload["label"])
+    target["ai_uv_variant_prompt_summary"] = str(operation.payload["prompt_summary"])
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            target,
+            "object",
+            ChangeKind.UPDATED,
+            f"Tagged UV variant {variant['variant_uv_map_name']}",
+        )
+    )
+
+
+def _create_uv_comparison_preview(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    _require_uv_map(target, str(operation.payload["source_uv_map_name"]))
+    variant = _runtime_uv_variant(str(operation.payload["variant_id"]), results)
+    if variant["target"] != target:
+        raise ExecutionError("UV variant belongs to a different target.")
+    _create_split_preview_image(
+        operation,
+        results,
+        transaction,
+        str(operation.payload["preview_name"]),
+        (0.12, 0.35, 0.85, 1.0),
+        (0.9, 0.25, 0.18, 1.0),
+        "uv_variant",
+    )
+
+
+def _accept_uv_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    variant = _runtime_uv_variant(str(operation.payload["variant_id"]), results)
+    if variant["target"] != target:
+        raise ExecutionError("UV variant belongs to a different target.")
+    variant_layer = _require_uv_map(target, str(variant["variant_uv_map_name"]))
+    replace_name = str(operation.payload["replace_uv_map_name"])
+    replace_layer = target.data.uv_layers.get(replace_name)
+    created = replace_layer is None
+    if replace_layer is None:
+        replace_layer = target.data.uv_layers.new(name=replace_name)
+    old_uvs = _uv_layer_values(replace_layer)
+    old_active_name = _active_uv_layer_name(target)
+    old_render_name = _render_uv_layer_name(target)
+    transaction.add_rollback(
+        partial(
+            _restore_accepted_uv_variant,
+            target,
+            replace_name,
+            old_uvs,
+            created,
+            old_active_name,
+            old_render_name,
+        )
+    )
+    for loop, variant_loop in zip(replace_layer.data, variant_layer.data, strict=True):
+        loop.uv = tuple(variant_loop.uv)
+    if bool(operation.payload["make_active"]):
+        target.data.uv_layers.active = replace_layer
+    if bool(operation.payload["make_render_active"]):
+        replace_layer.active_render = True
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            target,
+            "object",
+            ChangeKind.UPDATED,
+            f"Accepted UV variant into {replace_name}",
+        )
+    )
+
+
+def _reject_uv_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _require_mesh_object(target, str(operation.payload["target_id"]))
+    variant = _runtime_uv_variant(str(operation.payload["variant_id"]), results)
+    if variant["target"] != target:
+        raise ExecutionError("UV variant belongs to a different target.")
+    variant_name = str(variant["variant_uv_map_name"])
+    if bool(operation.payload["remove_variant"]):
+        snapshots = _uv_layer_snapshots(target, (variant_name,))
+        transaction.add_rollback(partial(_restore_uv_layer_snapshots, target, snapshots))
+        _remove_uv_layer(target, variant_name)
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            target,
+            "object",
+            ChangeKind.UPDATED,
+            f"Rejected UV variant {variant_name}",
+        )
+    )
+
+
 def _import_pbr_texture_set(
     operation: Operation,
     results: dict[str, Any],
@@ -2502,12 +4990,19 @@ def _set_pbr_texture_role(
 
 
 def _generate_texture_image(
+    context: Any,
     operation: Operation,
     results: dict[str, Any],
     transaction: _Transaction,
 ) -> None:
     if openai_image_generation_enabled():
-        _generate_texture_image_with_openai(operation, results, transaction)
+        _generate_image_with_openai(
+            context,
+            operation,
+            results,
+            transaction,
+            detail="Generated texture image with OpenAI Images",
+        )
         return
 
     image = _new_filled_image(
@@ -2548,10 +5043,67 @@ def _generate_texture_image(
     )
 
 
-def _generate_texture_image_with_openai(
+def _generate_image_asset(
+    context: Any,
     operation: Operation,
     results: dict[str, Any],
     transaction: _Transaction,
+) -> None:
+    if openai_image_generation_enabled():
+        _generate_image_with_openai(
+            context,
+            operation,
+            results,
+            transaction,
+            detail="Generated image asset with OpenAI Images",
+        )
+        return
+
+    image = _new_filled_image(
+        str(operation.payload["image_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        (0.08, 0.08, 0.08, 1.0),
+        str(operation.payload["color_space"]),
+        pack=False,
+    )
+    try:
+        _write_generated_pattern(
+            image,
+            str(operation.payload["prompt"]),
+            "gradient",
+            (0.08, 0.08, 0.08, 1.0),
+            (0.2, 0.45, 0.85, 1.0),
+        )
+        image["ai_generated_prompt"] = str(operation.payload["prompt"])
+        image["ai_generated_kind"] = "image_asset"
+        if bool(operation.payload["pack"]):
+            image.pack()
+    except Exception:
+        _remove_created_image(image)
+        raise
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Generated deterministic image asset",
+        )
+    )
+
+
+def _generate_image_with_openai(
+    context: Any,
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    *,
+    detail: str,
 ) -> None:
     import bpy
 
@@ -2560,7 +5112,9 @@ def _generate_texture_image_with_openai(
     height = int(operation.payload["height"])
     suffix = f"{operation.operation_id}_{uuid.uuid4().hex[:8]}"
     destination = Path(tempfile.gettempdir()) / "blender_ai_assistant" / f"{suffix}.png"
-    provider = OpenAIImageProvider.from_environment()
+    provider = OpenAIImageProvider.from_environment(
+        api_key=_resolve_openai_image_api_key(context)
+    )
     provider.generate_texture(
         prompt=str(operation.payload["prompt"]),
         width=width,
@@ -2589,9 +5143,23 @@ def _generate_texture_image_with_openai(
             "image",
             image.name,
             ChangeKind.CREATED,
-            "Generated texture image with OpenAI Images",
+            detail,
         )
     )
+
+
+def _resolve_openai_image_api_key(context: Any) -> str:
+    api_key = resolve_environment_value("OPENAI_API_KEY")
+    if api_key:
+        return api_key
+
+    with suppress(Exception):
+        from ..ui.preferences import get_preferences, resolve_provider_choice
+
+        preferences = get_preferences(context)
+        if preferences is not None and resolve_provider_choice(preferences) == PROVIDER_OPENAI:
+            return str(preferences.session_api_key).strip()
+    return ""
 
 
 def _save_generated_texture(
@@ -2636,8 +5204,8 @@ def _attach_texture_image(
         image,
         str(operation.payload["node_label"]),
         str(operation.payload["connect_to"]),
-        projection="FLAT",
-        extension="REPEAT",
+        projection=str(operation.payload.get("projection", "FLAT")),
+        extension=str(operation.payload.get("extension", "REPEAT")),
         uv_map_name=operation.payload.get("uv_map_name"),
         transaction=transaction,
     )
@@ -2653,6 +5221,672 @@ def _attach_texture_image(
             f"Attached texture image {image.name}",
         )
     )
+
+
+def _new_controlled_principled_material(
+    name: str,
+    base_color: tuple[float, float, float],
+    metallic: float,
+    roughness: float,
+    alpha: float,
+) -> Any:
+    import bpy
+
+    material: Any = bpy.data.materials.new(name)
+    try:
+        if material.name != name:
+            raise ExecutionError(f"Blender could not assign material name {name!r}.")
+        material.use_nodes = True
+        material.diffuse_color = (*base_color, alpha)
+        material.metallic = metallic
+        material.roughness = roughness
+        material["ai_assistant_created"] = True
+        principled = material.node_tree.nodes.get("Principled BSDF")
+        if principled is None:
+            raise ExecutionError("The new material has no Principled BSDF node.")
+        _set_principled_input_if_available(principled, "Base Color", (*base_color, alpha))
+        _set_principled_input_if_available(principled, "Metallic", metallic)
+        _set_principled_input_if_available(principled, "Roughness", roughness)
+        _set_principled_input_if_available(principled, "Alpha", alpha)
+    except Exception:
+        _remove_created_material(material)
+        raise
+    return material
+
+
+def _record_material_result(
+    operation: Operation,
+    material: Any,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    detail: str,
+) -> None:
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = material
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "material",
+            material.name,
+            ChangeKind.CREATED,
+            detail,
+        )
+    )
+
+
+def _material_state_snapshot(material: Any) -> tuple[Any, ...]:
+    return (
+        tuple(float(value) for value in material.diffuse_color),
+        bool(material.use_nodes),
+        float(getattr(material, "metallic", 0.0)),
+        float(getattr(material, "roughness", 0.5)),
+        _principled_values(material),
+    )
+
+
+def _build_shader_layer_nodes(
+    material: Any,
+    payload: Mapping[str, Any],
+    layer_id: str,
+) -> tuple[Any, ...]:
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+    layer_name = str(payload["layer_name"])
+    layer_type = str(payload["layer_type"])
+    order = int(material.get("ai_shader_layer_count", 0)) + 1
+    opacity = float(payload["opacity"])
+    color = _rgb(payload["color"])
+    created: list[Any] = []
+    try:
+        noise = node_tree.nodes.new("ShaderNodeTexNoise")
+        noise.name = f"AI Layer {layer_name} Noise"
+        noise.label = noise.name
+        _tag_shader_layer_node(noise, layer_id, layer_type, order)
+        noise.inputs["Scale"].default_value = _shader_layer_scale(layer_type)
+        created.append(noise)
+
+        ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+        ramp.name = f"AI Layer {layer_name} Ramp"
+        ramp.label = ramp.name
+        _tag_shader_layer_node(ramp, layer_id, layer_type, order)
+        _apply_color_ramp_stops(
+            ramp,
+            (
+                {"position": 0.0, "color": (*_dim_rgb(color, 0.35), 1.0)},
+                {"position": min(1.0, max(0.01, opacity)), "color": (*color, 1.0)},
+            ),
+        )
+        node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+        if "Base Color" in principled.inputs:
+            node_tree.links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+        created.append(ramp)
+
+        if float(payload["bump_strength"]) > 0.0:
+            bump = node_tree.nodes.new("ShaderNodeBump")
+            bump.name = f"AI Layer {layer_name} Bump"
+            bump.label = bump.name
+            _tag_shader_layer_node(bump, layer_id, layer_type, order)
+            bump.inputs["Strength"].default_value = float(payload["bump_strength"])
+            if "Height" in bump.inputs:
+                node_tree.links.new(noise.outputs["Fac"], bump.inputs["Height"])
+            if "Normal" in principled.inputs:
+                node_tree.links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+            created.append(bump)
+    except Exception:
+        for node in reversed(created):
+            _remove_shader_node(node_tree, node)
+        raise
+    return tuple(created)
+
+
+def _build_shader_layer_mask_node(
+    material: Any,
+    mask_source: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    results: Mapping[str, Any],
+) -> Any:
+    node_tree = material.node_tree
+    kind = str(mask_source["kind"])
+    if kind == "image":
+        image = _runtime_image(str(mask_source["image_id"]), results)
+        node = node_tree.nodes.new("ShaderNodeTexImage")
+        node.image = image
+    elif kind == "uv_map":
+        node = node_tree.nodes.new("ShaderNodeUVMap")
+        node.uv_map = str(mask_source["uv_map_name"])
+    elif kind == "vertex_group":
+        node = node_tree.nodes.new("ShaderNodeValue")
+        node.outputs[0].default_value = float(payload["strength"])
+        node["ai_vertex_group_mask"] = str(mask_source["vertex_group"])
+    else:
+        node = node_tree.nodes.new("ShaderNodeTexNoise")
+        pattern = str(mask_source["pattern"])
+        node.inputs["Scale"].default_value = 32.0 if pattern in {"noise", "skin_pores"} else 12.0
+    node.name = f"AI Layer Mask {payload['layer_id']!s}".replace("result:", "")
+    node.label = node.name
+    node["ai_assistant_created"] = True
+    node["ai_shader_layer_mask"] = True
+    node["ai_shader_layer_mask_kind"] = kind
+    return node
+
+
+def _tag_shader_layer_node(node: Any, layer_id: str, layer_type: str, order: int) -> None:
+    node["ai_assistant_created"] = True
+    node["ai_shader_layer_id"] = layer_id
+    node["ai_shader_layer_type"] = layer_type
+    node["ai_shader_layer_order"] = order
+
+
+def _first_node_by_bl_idname(nodes: tuple[Any, ...], bl_idname: str) -> Any | None:
+    for node in nodes:
+        if node.bl_idname == bl_idname:
+            return node
+    return None
+
+
+def _runtime_shader_layer(layer_id: str, results: Mapping[str, Any]) -> dict[str, Any]:
+    if not layer_id.startswith(RESULT_REFERENCE_PREFIX):
+        raise ExecutionError("Shader layer references must use result:<operation_id>.")
+    layer = results.get(layer_id)
+    if not isinstance(layer, dict) or "nodes" not in layer or "material" not in layer:
+        raise ExecutionError(f"Shader layer result {layer_id} is unavailable.")
+    return layer
+
+
+def _restore_node_custom_properties(
+    snapshots: tuple[tuple[Any, dict[str, Any]], ...],
+) -> None:
+    for node, properties in snapshots:
+        for key in tuple(node.keys()):
+            if key not in properties:
+                del node[key]
+        for key, value in properties.items():
+            node[key] = value
+
+
+def _restore_shader_nodes_from_snapshots(
+    node_tree: Any,
+    snapshots: tuple[Mapping[str, Any], ...],
+) -> None:
+    for snapshot in snapshots:
+        _restore_shader_node_snapshot(node_tree, snapshot)
+
+
+def _build_procedural_node_set(material: Any, operation: Operation) -> tuple[Any, ...]:
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+    payload = operation.payload
+    label = str(payload["node_set_label"])
+    texture_type = _procedural_texture_node_type(operation)
+    color = _color_from_text(label)
+    secondary = _mix_rgb(color, (1.0, 1.0, 1.0), float(payload["contrast"]))
+    created: list[Any] = []
+    try:
+        texture = node_tree.nodes.new(texture_type)
+        texture.name = f"{label} Texture"
+        texture.label = texture.name
+        texture["ai_assistant_created"] = True
+        texture["ai_procedural_node_set"] = operation.type.value
+        if "Scale" in texture.inputs:
+            texture.inputs["Scale"].default_value = float(payload["scale"])
+        if "Detail" in texture.inputs:
+            texture.inputs["Detail"].default_value = min(
+                16.0,
+                2.0 + float(payload["contrast"]) * 12.0,
+            )
+        created.append(texture)
+
+        coordinate = node_tree.nodes.new("ShaderNodeTexCoord")
+        coordinate.name = f"{label} Coordinates"
+        coordinate.label = coordinate.name
+        coordinate["ai_assistant_created"] = True
+        created.append(coordinate)
+
+        mapping = node_tree.nodes.new("ShaderNodeMapping")
+        mapping.name = f"{label} Mapping"
+        mapping.label = mapping.name
+        mapping["ai_assistant_created"] = True
+        created.append(mapping)
+
+        coord_socket_name = {
+            "generated": "Generated",
+            "object": "Object",
+            "uv": "UV",
+        }.get(str(payload["mapping"]), "Generated")
+        coord_socket = coordinate.outputs.get(coord_socket_name) or coordinate.outputs.get(
+            "Generated"
+        )
+        if coord_socket is not None and "Vector" in mapping.inputs and "Vector" in texture.inputs:
+            node_tree.links.new(coord_socket, mapping.inputs["Vector"])
+            node_tree.links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+
+        ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+        ramp.name = f"{label} Ramp"
+        ramp.label = ramp.name
+        ramp["ai_assistant_created"] = True
+        _apply_color_ramp_stops(
+            ramp,
+            (
+                {"position": 0.0, "color": (*color, 1.0)},
+                {"position": 1.0, "color": (*secondary, 1.0)},
+            ),
+        )
+        texture_output = texture.outputs.get("Fac") or texture.outputs.get("Distance")
+        if texture_output is not None:
+            node_tree.links.new(texture_output, ramp.inputs["Fac"])
+        if "Base Color" in principled.inputs:
+            node_tree.links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+        created.append(ramp)
+
+        if float(payload["bump_strength"]) > 0.0:
+            bump = node_tree.nodes.new("ShaderNodeBump")
+            bump.name = f"{label} Bump"
+            bump.label = bump.name
+            bump["ai_assistant_created"] = True
+            bump.inputs["Strength"].default_value = float(payload["bump_strength"])
+            if texture_output is not None and "Height" in bump.inputs:
+                node_tree.links.new(texture_output, bump.inputs["Height"])
+            if "Normal" in principled.inputs:
+                node_tree.links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+            created.append(bump)
+
+        roughness_socket = principled.inputs.get("Roughness")
+        if roughness_socket is not None:
+            roughness_socket.default_value = max(
+                0.0,
+                min(
+                    1.0,
+                    float(roughness_socket.default_value)
+                    + float(payload["roughness_influence"]) * 0.25,
+                ),
+            )
+    except Exception:
+        for node in reversed(created):
+            _remove_shader_node(node_tree, node)
+        raise
+    return tuple(created)
+
+
+def _procedural_texture_node_type(operation: Operation) -> str:
+    if operation.type is OperationType.CREATE_TRIPLANAR_MAPPING_SETUP:
+        return "ShaderNodeTexVoronoi"
+    if operation.type is OperationType.CREATE_OBJECT_SPACE_GRADIENT_SHADER:
+        return "ShaderNodeTexWave"
+    if operation.type is OperationType.CREATE_CURVATURE_STYLE_MASK:
+        return "ShaderNodeTexVoronoi"
+    pattern = str(operation.payload.get("pattern", "noise"))
+    if pattern in {"carbon_fiber", "fabric_weave", "water_ripples"}:
+        return "ShaderNodeTexWave"
+    if pattern in {"ceramic_crackle", "granite"}:
+        return "ShaderNodeTexVoronoi"
+    return "ShaderNodeTexNoise"
+
+
+def _palette_colors_from_source(
+    source: str,
+    count: int,
+) -> tuple[tuple[float, float, float], ...]:
+    digest = hashlib.sha256(source.encode("utf-8")).digest()
+    colors: list[tuple[float, float, float]] = []
+    for index in range(count):
+        offset = (index * 3) % len(digest)
+        colors.append(
+            (
+                0.1 + digest[offset] / 255.0 * 0.8,
+                0.1 + digest[(offset + 1) % len(digest)] / 255.0 * 0.8,
+                0.1 + digest[(offset + 2) % len(digest)] / 255.0 * 0.8,
+            )
+        )
+    return tuple(colors)
+
+
+def _remove_created_text(text: Any) -> None:
+    import bpy
+
+    with suppress(ReferenceError):
+        data: Any = bpy.data
+        if data.texts.get(text.name) == text:
+            data.texts.remove(text)
+
+
+def _runtime_material_palette(
+    palette_id: str,
+    results: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not palette_id.startswith(RESULT_REFERENCE_PREFIX):
+        raise ExecutionError("Material palette references must use result:<operation_id>.")
+    palette = results.get(palette_id)
+    if not isinstance(palette, dict) or "colors" not in palette:
+        raise ExecutionError(f"Material palette result {palette_id} is unavailable.")
+    return palette
+
+
+def _color_from_text(text: str) -> tuple[float, float, float]:
+    return _palette_colors_from_source(text, 1)[0]
+
+
+def _family_default_metallic(family: str) -> float:
+    return 0.85 if family in {"metal", "brushed_metal", "painted_metal"} else 0.0
+
+
+def _family_default_roughness(family: str) -> float:
+    if family in {"glass", "glossy_plastic"}:
+        return 0.12
+    if family in {"rubber", "fabric", "stone"}:
+        return 0.75
+    return 0.45
+
+
+def _build_reference_texture_hint_nodes(
+    material: Any,
+    label: str,
+    color: tuple[float, float, float],
+) -> tuple[Any, ...]:
+    node_tree = material.node_tree
+    principled = node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+    created: list[Any] = []
+    try:
+        noise = node_tree.nodes.new("ShaderNodeTexNoise")
+        noise.name = f"{label} Reference Noise"
+        noise.label = noise.name
+        noise["ai_assistant_created"] = True
+        noise.inputs["Scale"].default_value = 18.0
+        created.append(noise)
+        ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+        ramp.name = f"{label} Reference Ramp"
+        ramp.label = ramp.name
+        ramp["ai_assistant_created"] = True
+        _apply_color_ramp_stops(
+            ramp,
+            (
+                {"position": 0.0, "color": (*_dim_rgb(color, 0.45), 1.0)},
+                {"position": 1.0, "color": (*color, 1.0)},
+            ),
+        )
+        node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+        if "Base Color" in principled.inputs:
+            node_tree.links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+        created.append(ramp)
+    except Exception:
+        for node in reversed(created):
+            _remove_shader_node(node_tree, node)
+        raise
+    return tuple(created)
+
+
+def _mix_rgb(
+    first: tuple[float, float, float],
+    second: tuple[float, float, float],
+    factor: float,
+) -> tuple[float, float, float]:
+    bounded = max(0.0, min(1.0, factor))
+    mixed = tuple(
+        first[index] * (1.0 - bounded) + second[index] * bounded
+        for index in range(3)
+    )
+    return (mixed[0], mixed[1], mixed[2])
+
+
+def _dim_rgb(color: tuple[float, float, float], factor: float) -> tuple[float, float, float]:
+    dimmed = tuple(max(0.0, min(1.0, component * factor)) for component in color)
+    return (dimmed[0], dimmed[1], dimmed[2])
+
+
+def _create_shading_preview_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    name: str,
+    color: tuple[float, float, float, float],
+    preview_kind: str,
+) -> None:
+    image = _new_filled_image(
+        name,
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        _rgba(color),
+        "sRGB",
+        pack=bool(operation.payload["pack"]),
+    )
+    image["ai_preview_kind"] = preview_kind
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            f"Created {preview_kind} preview image",
+        )
+    )
+
+
+def _specialized_metallic(
+    operation_type: OperationType,
+    payload: Mapping[str, Any],
+) -> float:
+    if operation_type is OperationType.CREATE_ANISOTROPIC_MATERIAL:
+        return max(0.0, min(1.0, float(payload["template_strength"])))
+    return 0.0
+
+
+def _apply_specialized_material_template(
+    material: Any,
+    operation_type: OperationType,
+    payload: Mapping[str, Any],
+) -> None:
+    material["ai_specialized_material"] = operation_type.value
+    principled = material.node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        raise ExecutionError("Material has no Principled BSDF node.")
+    _set_principled_input_if_available(principled, "Alpha", float(payload["alpha"]))
+    _set_principled_input_if_available(
+        principled,
+        "Emission Color",
+        (*tuple(float(value) for value in payload["base_color"]), 1.0),
+    )
+    if operation_type is OperationType.CREATE_GLASS_MATERIAL:
+        _set_principled_input_if_available(
+            principled,
+            "Transmission Weight",
+            float(payload["transmission"]),
+        )
+        _set_principled_input_if_available(
+            principled,
+            "Transmission",
+            float(payload["transmission"]),
+        )
+        _set_principled_input_if_available(principled, "IOR", float(payload["ior"]))
+        with suppress(Exception):
+            material.blend_method = "BLEND"
+    elif operation_type is OperationType.CREATE_TRANSLUCENT_MATERIAL:
+        _set_principled_input_if_available(principled, "Alpha", float(payload["alpha"]))
+        with suppress(Exception):
+            material.blend_method = "BLEND"
+    elif operation_type is OperationType.CREATE_EMISSION_MATERIAL:
+        _set_principled_input_if_available(
+            principled,
+            "Emission Strength",
+            max(0.1, float(payload["emission_strength"])),
+        )
+    elif operation_type is OperationType.CREATE_VOLUME_MATERIAL:
+        _add_volume_hint_node(material, payload)
+    elif operation_type is OperationType.CREATE_TOON_SHADER_MATERIAL:
+        _add_toon_hint_node(material, payload)
+    elif operation_type is OperationType.CREATE_ANISOTROPIC_MATERIAL:
+        _set_principled_input_if_available(principled, "Anisotropic", float(payload["anisotropy"]))
+
+
+def _add_volume_hint_node(material: Any, payload: Mapping[str, Any]) -> None:
+    node_tree = material.node_tree
+    output = node_tree.nodes.get("Material Output")
+    if output is None:
+        return
+    with suppress(Exception):
+        volume = node_tree.nodes.new("ShaderNodeVolumePrincipled")
+        volume.name = "AI Volume Hint"
+        volume.label = volume.name
+        volume["ai_assistant_created"] = True
+        _set_principled_input_if_available(
+            volume,
+            "Color",
+            (*tuple(float(value) for value in payload["base_color"]), 1.0),
+        )
+        _set_principled_input_if_available(volume, "Density", float(payload["density"]))
+        if "Volume" in output.inputs and volume.outputs:
+            node_tree.links.new(volume.outputs[0], output.inputs["Volume"])
+
+
+def _add_toon_hint_node(material: Any, payload: Mapping[str, Any]) -> None:
+    node_tree = material.node_tree
+    ramp = node_tree.nodes.new("ShaderNodeValToRGB")
+    ramp.name = "AI Toon Bands"
+    ramp.label = ramp.name
+    ramp["ai_assistant_created"] = True
+    color = _rgb(payload["base_color"])
+    _apply_color_ramp_stops(
+        ramp,
+        (
+            {"position": 0.0, "color": (*_dim_rgb(color, 0.35), 1.0)},
+            {"position": float(payload["template_strength"]), "color": (*color, 1.0)},
+        ),
+    )
+
+
+def _set_principled_input_if_available(node: Any, input_name: str, value: Any) -> None:
+    socket = node.inputs.get(input_name)
+    if socket is not None:
+        socket.default_value = value
+
+
+def _shader_layer_scale(layer_type: str) -> float:
+    return {
+        "base": 4.0,
+        "paint": 8.0,
+        "dust": 28.0,
+        "edge_wear": 36.0,
+        "scratches": 52.0,
+        "clearcoat": 6.0,
+        "emission_detail": 14.0,
+        "decal": 2.0,
+    }.get(layer_type, 12.0)
+
+
+def _node_has_links(node: Any) -> bool:
+    return any(socket.links for socket in node.inputs) or any(
+        socket.links for socket in node.outputs
+    )
+
+
+def _is_assistant_owned_material(material: Any) -> bool:
+    return bool(material.get("ai_assistant_created", False)) or str(material.name).startswith("AI ")
+
+
+def _restore_node_locations(locations: tuple[tuple[Any, tuple[float, ...]], ...]) -> None:
+    for node, location in locations:
+        node.location = location
+
+
+def _link_should_be_checked(link: Any, assistant_owned_only: bool) -> bool:
+    if not assistant_owned_only:
+        return True
+    return _is_assistant_created_node(link.from_node) or _is_assistant_created_node(link.to_node)
+
+
+def _shader_link_is_compatible(link: Any) -> bool:
+    from_family = SHADER_SOCKET_FAMILIES.get(str(link.from_socket.name))
+    to_family = SHADER_SOCKET_FAMILIES.get(str(link.to_socket.name))
+    if from_family is None or to_family is None:
+        return True
+    return to_family in SHADER_SOCKET_COMPATIBILITY.get(from_family, ())
+
+
+def _custom_property_snapshot(
+    item: Any,
+    keys: tuple[str, ...],
+) -> tuple[tuple[str, bool, Any], ...]:
+    return tuple((key, key in item, item.get(key)) for key in keys)
+
+
+def _restore_custom_properties(
+    item: Any,
+    snapshot: tuple[tuple[str, bool, Any], ...],
+) -> None:
+    for key, existed, value in snapshot:
+        if existed:
+            item[key] = value
+        elif key in item:
+            del item[key]
+
+
+def _create_split_preview_image(
+    operation: Operation,
+    results: dict[str, Any],
+    transaction: _Transaction,
+    name: str,
+    source_color: tuple[float, ...],
+    variant_color: tuple[float, ...],
+    preview_kind: str,
+) -> None:
+    image = _new_filled_image(
+        name,
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        _rgba(source_color),
+        "sRGB",
+        pack=False,
+    )
+    width, height = int(image.size[0]), int(image.size[1])
+    pixels: list[float] = []
+    left = _rgba(source_color)
+    right = _rgba(variant_color)
+    for _y in range(height):
+        for x in range(width):
+            pixels.extend(left if x < width // 2 else right)
+    image.pixels[:] = pixels
+    if bool(operation.payload["pack"]):
+        image.pack()
+    image["ai_preview_kind"] = preview_kind
+    if "mode" in operation.payload:
+        image["ai_preview_mode"] = str(operation.payload["mode"])
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            f"Created {preview_kind} preview image",
+        )
+    )
+
+
+def _rgb(values: Any) -> tuple[float, float, float]:
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def _rgba(values: Any) -> tuple[float, float, float, float]:
+    if len(values) >= 4:
+        return (
+            float(values[0]),
+            float(values[1]),
+            float(values[2]),
+            float(values[3]),
+        )
+    return (float(values[0]), float(values[1]), float(values[2]), 1.0)
 
 
 def _create_paint_image(
@@ -3708,6 +6942,566 @@ def _normalize_uvs(uv_layer: Any, margin: float) -> None:
             margin + ((float(loop.uv[0]) - min_u) / span_u) * usable,
             margin + ((float(loop.uv[1]) - min_v) / span_v) * usable,
         )
+
+
+def _ensure_uv_layer_for_edit(
+    item: Any,
+    target_id: str,
+    uv_name: str,
+    *,
+    create_if_missing: bool,
+    overwrite_existing: bool,
+) -> tuple[Any, bool]:
+    _require_mesh_object(item, target_id)
+    uv_layer = item.data.uv_layers.get(uv_name)
+    if uv_layer is None:
+        if not create_if_missing:
+            raise ExecutionError(f"Object {item.name!r} has no UV map {uv_name!r}.")
+        item.data.uv_layers.new(name=uv_name)
+        uv_layer = item.data.uv_layers.get(uv_name)
+        if uv_layer is None:
+            raise ExecutionError(
+                f"Blender could not create UV map {uv_name!r} on {item.name!r}."
+            )
+        return uv_layer, True
+    if not overwrite_existing:
+        raise ExecutionError(f"UV map {uv_name!r} already exists on {item.name!r}.")
+    return uv_layer, False
+
+
+def _write_projection_uvs(item: Any, uv_layer: Any, operation: Operation) -> None:
+    if operation.type in {
+        OperationType.CYLINDER_PROJECT_UV_MAP,
+        OperationType.SPHERE_PROJECT_UV_MAP,
+    }:
+        _write_radial_uvs(item, uv_layer, float(operation.payload["margin"]))
+        return
+    _write_projected_uvs(item, uv_layer, float(operation.payload["margin"]))
+
+
+def _write_radial_uvs(item: Any, uv_layer: Any, margin: float) -> None:
+    mesh = item.data
+    coordinates = [vertex.co.copy() for vertex in mesh.vertices]
+    if not coordinates:
+        return
+    min_z = min(float(coordinate.z) for coordinate in coordinates)
+    max_z = max(float(coordinate.z) for coordinate in coordinates)
+    span_z = max(max_z - min_z, 1e-9)
+    usable = max(0.0, 1.0 - margin * 2.0)
+    for polygon in mesh.polygons:
+        for loop_index, vertex_index in zip(polygon.loop_indices, polygon.vertices, strict=True):
+            coordinate = coordinates[int(vertex_index)]
+            angle = math.atan2(float(coordinate.y), float(coordinate.x))
+            u = margin + ((angle + math.pi) / (math.pi * 2.0)) * usable
+            v = margin + ((float(coordinate.z) - min_z) / span_z) * usable
+            uv_layer.data[int(loop_index)].uv = (u, v)
+    mesh.update()
+
+
+def _uv_report_lines(
+    item: Any,
+    uv_layer: Any,
+    payload: Mapping[str, Any],
+) -> tuple[str, ...]:
+    values = _uv_layer_values(uv_layer)
+    out_of_bounds = sum(
+        1 for u, v in values if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0
+    )
+    seam_count = sum(1 for edge in item.data.edges if bool(getattr(edge, "use_seam", False)))
+    lines = [
+        "",
+        f"target: {item.name}",
+        f"uv_map: {uv_layer.name}",
+        f"loop_count: {len(values)}",
+        f"edge_seam_count: {seam_count}",
+        f"out_of_bounds_loops: {out_of_bounds}",
+    ]
+    if bool(payload.get("include_island_estimate", False)):
+        lines.append(f"estimated_islands: {max(1, seam_count // 4 + 1)}")
+    if bool(payload.get("include_material_usage", False)) or "checks" in payload:
+        lines.append(f"material_slots: {len(item.data.materials)}")
+    checks = payload.get("checks")
+    if isinstance(checks, Mapping):
+        enabled = ", ".join(name for name, enabled in checks.items() if enabled)
+        lines.append(f"checks: {enabled or 'none'}")
+    return tuple(lines)
+
+
+def _write_uv_preview_pattern(
+    image: Any,
+    label: str,
+    line_color: tuple[float, float, float, float],
+    background_color: tuple[float, float, float, float],
+) -> None:
+    width, height = int(image.size[0]), int(image.size[1])
+    digest = hashlib.sha256(label.encode("utf-8")).digest()
+    spacing = max(8, min(width, height) // 8)
+    pixels: list[float] = []
+    for y in range(height):
+        for x in range(width):
+            diagonal = (x + y + digest[0]) % spacing == 0
+            grid = x % spacing == 0 or y % spacing == 0
+            pixels.extend(line_color if diagonal or grid else background_color)
+    image.pixels[:] = pixels
+
+
+def _edge_seam_values(item: Any) -> tuple[bool, ...]:
+    return tuple(bool(getattr(edge, "use_seam", False)) for edge in item.data.edges)
+
+
+def _restore_edge_seams(item: Any, values: tuple[bool, ...]) -> None:
+    for edge, value in zip(item.data.edges, values, strict=True):
+        edge.use_seam = value
+    item.data.update()
+
+
+def _set_edge_seams(item: Any, edge_indices: tuple[int, ...], value: bool) -> None:
+    for edge_index in edge_indices:
+        if 0 <= edge_index < len(item.data.edges):
+            item.data.edges[edge_index].use_seam = value
+    item.data.update()
+
+
+def _set_edge_sharpness(item: Any, edge_indices: tuple[int, ...], value: bool) -> None:
+    for edge_index in edge_indices:
+        edge = item.data.edges[edge_index]
+        if hasattr(edge, "use_edge_sharp"):
+            edge.use_edge_sharp = value
+
+
+def _angle_based_edge_indices(item: Any, threshold_degrees: float) -> tuple[int, ...]:
+    if not item.data.edges:
+        return ()
+    if threshold_degrees <= 60.0:
+        return tuple(range(len(item.data.edges)))
+    step = 2 if threshold_degrees <= 120.0 else 3
+    return tuple(index for index, _edge in enumerate(item.data.edges) if index % step == 0)
+
+
+def _material_boundary_edge_indices(item: Any, material: Any) -> tuple[int, ...]:
+    material_index = _material_slot_index(item, material)
+    edge_keys = {tuple(sorted(edge.vertices)): index for index, edge in enumerate(item.data.edges)}
+    edge_indices: set[int] = set()
+    for polygon in item.data.polygons:
+        if int(polygon.material_index) != material_index:
+            continue
+        vertices = tuple(int(vertex_index) for vertex_index in polygon.vertices)
+        for index, vertex_index in enumerate(vertices):
+            key = tuple(sorted((vertex_index, vertices[(index + 1) % len(vertices)])))
+            edge_index = edge_keys.get(key)
+            if edge_index is not None:
+                edge_indices.add(edge_index)
+    if edge_indices:
+        return tuple(sorted(edge_indices))
+    return tuple(range(len(item.data.edges)))
+
+
+def _material_slot_index(item: Any, material: Any) -> int:
+    for index, slot_material in enumerate(item.data.materials):
+        if slot_material == material:
+            return index
+    if len(item.data.materials) == 0:
+        item.data.materials.append(material)
+        return 0
+    return 0
+
+
+def _runtime_uv_seam_set(seam_set_id: str, results: Mapping[str, Any]) -> Mapping[str, Any]:
+    seam_set = results.get(seam_set_id)
+    if not isinstance(seam_set, Mapping) or seam_set.get("kind") != "uv_seam_set":
+        raise ExecutionError(f"UV seam-set result {seam_set_id} is unavailable.")
+    return seam_set
+
+
+def _runtime_uv_island_set(island_set_id: str, results: Mapping[str, Any]) -> Mapping[str, Any]:
+    island_set = results.get(island_set_id)
+    if not isinstance(island_set, Mapping) or island_set.get("kind") != "uv_island_set":
+        raise ExecutionError(f"UV island-set result {island_set_id} is unavailable.")
+    return island_set
+
+
+def _runtime_uv_atlas(atlas_id: str, results: Mapping[str, Any]) -> Mapping[str, Any]:
+    atlas = results.get(atlas_id)
+    if not isinstance(atlas, Mapping) or atlas.get("kind") != "uv_atlas":
+        raise ExecutionError(f"UV atlas result {atlas_id} is unavailable.")
+    return atlas
+
+
+def _runtime_uv_variant(variant_id: str, results: Mapping[str, Any]) -> Mapping[str, Any]:
+    variant = results.get(variant_id)
+    if not isinstance(variant, Mapping) or variant.get("kind") != "uv_variant":
+        raise ExecutionError(f"UV variant result {variant_id} is unavailable.")
+    return variant
+
+
+def _runtime_uv_island_edit(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+) -> tuple[Any, Any, tuple[int, ...]]:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    uv_name = str(operation.payload["uv_map_name"])
+    uv_layer = _require_uv_map(item, uv_name)
+    island_set = _runtime_uv_island_set(str(operation.payload["island_set_id"]), results)
+    if isinstance(island_set.get("target_id"), str) and island_set["target_id"] != target_id:
+        raise ExecutionError("UV island set belongs to a different target.")
+    raw_loop_indices = island_set.get("loop_indices")
+    if not isinstance(raw_loop_indices, tuple):
+        targets = island_set.get("targets")
+        if isinstance(targets, Mapping):
+            raw_loop_indices = targets.get(target_id)
+    loop_indices = _valid_uv_loop_indices(uv_layer, raw_loop_indices)
+    return item, uv_layer, loop_indices
+
+
+def _valid_uv_loop_indices(uv_layer: Any, raw_loop_indices: Any) -> tuple[int, ...]:
+    if isinstance(raw_loop_indices, tuple):
+        indices = tuple(
+            int(index)
+            for index in raw_loop_indices
+            if isinstance(index, int) and 0 <= int(index) < len(uv_layer.data)
+        )
+        if indices:
+            return indices
+    return tuple(range(len(uv_layer.data)))
+
+
+def _uv_loop_bounds(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    if not loop_indices:
+        return (0.0, 0.0), (1.0, 1.0)
+    values = [
+        (float(uv_layer.data[index].uv[0]), float(uv_layer.data[index].uv[1]))
+        for index in loop_indices
+    ]
+    return (
+        (min(value[0] for value in values), min(value[1] for value in values)),
+        (max(value[0] for value in values), max(value[1] for value in values)),
+    )
+
+
+def _transform_uv_loops(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+    translation: tuple[float, float],
+    rotation_degrees: float,
+    scale: tuple[float, float],
+    pivot: tuple[float, float],
+) -> None:
+    radians = math.radians(rotation_degrees)
+    cosine = math.cos(radians)
+    sine = math.sin(radians)
+    for index in loop_indices:
+        loop = uv_layer.data[index]
+        local_u = (float(loop.uv[0]) - pivot[0]) * scale[0]
+        local_v = (float(loop.uv[1]) - pivot[1]) * scale[1]
+        loop.uv = (
+            pivot[0] + local_u * cosine - local_v * sine + translation[0],
+            pivot[1] + local_u * sine + local_v * cosine + translation[1],
+        )
+
+
+def _align_uv_loops(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+    mode: str,
+    bounds_min: tuple[float, float],
+    bounds_max: tuple[float, float],
+) -> None:
+    current_min, current_max = _uv_loop_bounds(uv_layer, loop_indices)
+    current_center = (
+        (current_min[0] + current_max[0]) * 0.5,
+        (current_min[1] + current_max[1]) * 0.5,
+    )
+    target_center = ((bounds_min[0] + bounds_max[0]) * 0.5, (bounds_min[1] + bounds_max[1]) * 0.5)
+    offset = [0.0, 0.0]
+    if mode == "left":
+        offset[0] = bounds_min[0] - current_min[0]
+    elif mode == "right":
+        offset[0] = bounds_max[0] - current_max[0]
+    elif mode == "bottom":
+        offset[1] = bounds_min[1] - current_min[1]
+    elif mode == "top":
+        offset[1] = bounds_max[1] - current_max[1]
+    else:
+        offset[0] = target_center[0] - current_center[0]
+        offset[1] = target_center[1] - current_center[1]
+    for index in loop_indices:
+        loop = uv_layer.data[index]
+        loop.uv = (float(loop.uv[0]) + offset[0], float(loop.uv[1]) + offset[1])
+
+
+def _distribute_uv_loops(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+    axis: str,
+    spacing: float,
+    bounds_min: tuple[float, float],
+    bounds_max: tuple[float, float],
+) -> None:
+    if len(loop_indices) <= 1:
+        return
+    ordered = tuple(sorted(loop_indices))
+    coordinate_index = 0 if axis == "horizontal" else 1
+    start = bounds_min[coordinate_index]
+    end = bounds_max[coordinate_index]
+    usable = max(0.0, (end - start) - spacing * (len(ordered) - 1))
+    for position, index in enumerate(ordered):
+        loop = uv_layer.data[index]
+        coordinate = start + (usable * position / max(1, len(ordered) - 1)) + spacing * position
+        if coordinate_index == 0:
+            loop.uv = (coordinate, float(loop.uv[1]))
+        else:
+            loop.uv = (float(loop.uv[0]), coordinate)
+
+
+def _scale_uv_loops_to_bounds(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+    bounds_min: tuple[float, float],
+    bounds_max: tuple[float, float],
+    *,
+    preserve_aspect: bool,
+) -> None:
+    current_min, current_max = _uv_loop_bounds(uv_layer, loop_indices)
+    span_u = max(current_max[0] - current_min[0], 1e-9)
+    span_v = max(current_max[1] - current_min[1], 1e-9)
+    target_span_u = max(bounds_max[0] - bounds_min[0], 1e-9)
+    target_span_v = max(bounds_max[1] - bounds_min[1], 1e-9)
+    scale_u = target_span_u / span_u
+    scale_v = target_span_v / span_v
+    if preserve_aspect:
+        scale_u = scale_v = min(scale_u, scale_v)
+    for index in loop_indices:
+        loop = uv_layer.data[index]
+        loop.uv = (
+            bounds_min[0] + (float(loop.uv[0]) - current_min[0]) * scale_u,
+            bounds_min[1] + (float(loop.uv[1]) - current_min[1]) * scale_v,
+        )
+
+
+def _uv_pin_values(uv_layer: Any) -> tuple[bool, ...]:
+    return tuple(bool(getattr(loop, "pin_uv", False)) for loop in uv_layer.data)
+
+
+def _restore_uv_pins(uv_layer: Any, values: tuple[bool, ...]) -> None:
+    for loop, value in zip(uv_layer.data, values, strict=True):
+        if hasattr(loop, "pin_uv"):
+            loop.pin_uv = value
+
+
+def _set_uv_pins(uv_layer: Any, loop_indices: tuple[int, ...], pinned: bool) -> None:
+    for index in loop_indices:
+        loop = uv_layer.data[index]
+        if hasattr(loop, "pin_uv"):
+            loop.pin_uv = pinned
+
+
+def _scale_uv_maps_for_targets(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+    scale_factor: float,
+) -> None:
+    island_set: Mapping[str, Any] | None = None
+    if isinstance(operation.payload.get("island_set_id"), str):
+        island_set = _runtime_uv_island_set(str(operation.payload["island_set_id"]), results)
+    for target_id in operation.target_ids:
+        item = _runtime_target(target_id, prepared, results)
+        _require_mesh_object(item, target_id)
+        uv_name = str(operation.payload["uv_map_name"])
+        uv_layer = _require_uv_map(item, uv_name)
+        old_uvs = _uv_layer_values(uv_layer)
+        transaction.add_rollback(partial(_restore_uv_layer, item, uv_name, old_uvs, False))
+        raw_indices: Any = None
+        if island_set is not None:
+            raw_indices = island_set.get("loop_indices")
+        loop_indices = _valid_uv_loop_indices(uv_layer, raw_indices)
+        current_min, current_max = _uv_loop_bounds(uv_layer, loop_indices)
+        pivot = (
+            (current_min[0] + current_max[0]) * 0.5,
+            (current_min[1] + current_max[1]) * 0.5,
+        )
+        _transform_uv_loops(
+            uv_layer,
+            loop_indices,
+            (0.0, 0.0),
+            0.0,
+            (scale_factor, scale_factor),
+            pivot,
+        )
+        transaction.record(
+            _datablock_change(
+                operation.operation_id,
+                item,
+                "object",
+                ChangeKind.UPDATED,
+                f"Adjusted texel density for UV map {uv_name}",
+            )
+        )
+
+
+def _bounded_uv_scale_factor(value: float) -> float:
+    return min(max(math.sqrt(max(value, 1e-9)) / 512.0, 0.25), 4.0)
+
+
+def _offset_uvs_to_tile(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+    target_tile: tuple[int, int],
+) -> None:
+    _scale_uv_loops_to_bounds(
+        uv_layer,
+        loop_indices,
+        (target_tile[0] + 0.02, target_tile[1] + 0.02),
+        (target_tile[0] + 0.98, target_tile[1] + 0.98),
+        preserve_aspect=True,
+    )
+
+
+def _spread_uvs_across_tiles(uv_layer: Any, tile_count_u: int, tile_count_v: int) -> None:
+    tile_total = max(1, tile_count_u * tile_count_v)
+    for index, loop in enumerate(uv_layer.data):
+        tile_index = index % tile_total
+        tile_u = tile_index % tile_count_u
+        tile_v = tile_index // tile_count_u
+        loop.uv = (float(loop.uv[0]) + tile_u, float(loop.uv[1]) + tile_v)
+
+
+def _relax_uv_loops(
+    uv_layer: Any,
+    loop_indices: tuple[int, ...],
+    iterations: int,
+    strength: float,
+) -> None:
+    if not loop_indices:
+        return
+    for _iteration in range(iterations):
+        current_min, current_max = _uv_loop_bounds(uv_layer, loop_indices)
+        center = (
+            (current_min[0] + current_max[0]) * 0.5,
+            (current_min[1] + current_max[1]) * 0.5,
+        )
+        factor = min(max(strength, 0.0), 1.0) * 0.05
+        for index in loop_indices:
+            loop = uv_layer.data[index]
+            loop.uv = (
+                float(loop.uv[0]) + (center[0] - float(loop.uv[0])) * factor,
+                float(loop.uv[1]) + (center[1] - float(loop.uv[1])) * factor,
+            )
+
+
+def _uv_layer_snapshots(item: Any, names: tuple[str, ...]) -> tuple[Any, ...]:
+    layer_snapshots: list[
+        tuple[str, bool, tuple[tuple[float, float], ...], tuple[bool, ...], bool]
+    ] = []
+    for name in names:
+        uv_layer = item.data.uv_layers.get(name)
+        if uv_layer is None:
+            layer_snapshots.append((name, False, (), (), False))
+        else:
+            layer_snapshots.append(
+                (
+                    name,
+                    True,
+                    _uv_layer_values(uv_layer),
+                    _uv_pin_values(uv_layer),
+                    bool(getattr(uv_layer, "active_render", False)),
+                )
+            )
+    return (_active_uv_layer_name(item), _render_uv_layer_name(item), tuple(layer_snapshots))
+
+
+def _restore_uv_layer_snapshots(item: Any, snapshots: tuple[Any, ...]) -> None:
+    active_name = snapshots[0]
+    render_name = snapshots[1]
+    layer_snapshots = snapshots[2]
+    for name, existed, values, pins, active_render in layer_snapshots:
+        uv_layer = item.data.uv_layers.get(name)
+        if not existed:
+            if uv_layer is not None:
+                item.data.uv_layers.remove(uv_layer)
+            continue
+        if uv_layer is None:
+            uv_layer = item.data.uv_layers.new(name=name)
+        for loop, value in zip(uv_layer.data, values, strict=True):
+            loop.uv = value
+        _restore_uv_pins(uv_layer, pins)
+        uv_layer.active_render = bool(active_render)
+    _restore_active_uv_names(item, active_name, render_name)
+
+
+def _average_uv_layers(destination: Any, source_layers: tuple[Any, ...]) -> None:
+    layers = (destination, *source_layers)
+    for loop_index, loop in enumerate(destination.data):
+        coordinates = [
+            (float(layer.data[loop_index].uv[0]), float(layer.data[loop_index].uv[1]))
+            for layer in layers
+            if loop_index < len(layer.data)
+        ]
+        if coordinates:
+            loop.uv = (
+                sum(coordinate[0] for coordinate in coordinates) / len(coordinates),
+                sum(coordinate[1] for coordinate in coordinates) / len(coordinates),
+            )
+
+
+def _retarget_uv_nodes(item: Any, source_names: tuple[str, ...], destination_name: str) -> None:
+    source_set = set(source_names)
+    for material in item.data.materials:
+        if material is None or not bool(getattr(material, "use_nodes", False)):
+            continue
+        for node in material.node_tree.nodes:
+            if getattr(node, "bl_idname", "") == "ShaderNodeUVMap" and node.uv_map in source_set:
+                node.uv_map = destination_name
+
+
+def _active_uv_layer_name(item: Any) -> str | None:
+    active = item.data.uv_layers.active
+    return str(active.name) if active is not None else None
+
+
+def _render_uv_layer_name(item: Any) -> str | None:
+    for layer in item.data.uv_layers:
+        if bool(getattr(layer, "active_render", False)):
+            return str(layer.name)
+    return None
+
+
+def _restore_active_uv_names(
+    item: Any,
+    active_name: str | None,
+    render_name: str | None,
+) -> None:
+    if active_name is not None and item.data.uv_layers.get(active_name) is not None:
+        item.data.uv_layers.active = item.data.uv_layers[active_name]
+    for layer in item.data.uv_layers:
+        layer.active_render = render_name is not None and layer.name == render_name
+
+
+def _restore_accepted_uv_variant(
+    item: Any,
+    uv_map_name: str,
+    values: tuple[tuple[float, float], ...],
+    remove_if_created: bool,
+    active_name: str | None,
+    render_name: str | None,
+) -> None:
+    _restore_uv_layer(item, uv_map_name, values, remove_if_created)
+    _restore_active_uv_names(item, active_name, render_name)
+
+
+def _float2(values: Any) -> tuple[float, float]:
+    return (float(values[0]), float(values[1]))
+
+
+def _int2(values: Any) -> tuple[int, int]:
+    return (int(values[0]), int(values[1]))
 
 
 def _pbr_material_images(payload: Mapping[str, Any], results: Mapping[str, Any]) -> dict[str, Any]:
@@ -5746,7 +9540,10 @@ def _create_sculpt_mask(
     transaction: _Transaction,
 ) -> None:
     region = _runtime_sculpt_region(str(operation.payload["region_id"]), results)
-    group = region.target.vertex_groups.new(name=str(operation.payload["mask_name"]))
+    mask_name = str(operation.payload["mask_name"])
+    if region.target.vertex_groups.get(mask_name) is not None:
+        raise ExecutionError(f"Object {region.target.name!r} already has mask {mask_name!r}.")
+    group = region.target.vertex_groups.new(name=mask_name)
     group.add(region.vertex_indices, float(operation.payload["strength"]), "REPLACE")
     transaction.add_rollback(partial(_remove_vertex_group, region.target, group.name))
     reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
@@ -5758,6 +9555,83 @@ def _create_sculpt_mask(
             "object",
             ChangeKind.UPDATED,
             f"Created sculpt mask {group.name}",
+        )
+    )
+
+
+def _sculpt_mask_operation(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _ensure_editable_mesh(item)
+    group = _require_vertex_group(item, str(operation.payload["mask_name"]))
+    old_weights = _vertex_group_weights(item, group)
+    transaction.add_rollback(
+        partial(_restore_vertex_group_weights, item, group.name, old_weights)
+    )
+
+    strength = float(operation.payload["strength"])
+    iterations = int(operation.payload["iterations"])
+    new_weights = _edited_sculpt_mask_weights(
+        item,
+        operation.type,
+        old_weights,
+        strength,
+        iterations,
+    )
+    _set_vertex_group_weights(item, group, new_weights)
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Updated sculpt mask {group.name}",
+        )
+    )
+
+
+def _combine_sculpt_masks(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _ensure_editable_mesh(item)
+    source = _require_vertex_group(item, str(operation.payload["source_mask_name"]))
+    target = _require_vertex_group(item, str(operation.payload["target_mask_name"]))
+    result_name = str(operation.payload["result_mask_name"])
+    if item.vertex_groups.get(result_name) is not None:
+        raise ExecutionError(f"Object {item.name!r} already has mask {result_name!r}.")
+
+    result_weights = _combined_sculpt_mask_weights(
+        _vertex_group_weights(item, source),
+        _vertex_group_weights(item, target),
+        str(operation.payload["combine_mode"]),
+    )
+    group = item.vertex_groups.new(name=result_name)
+    try:
+        _set_vertex_group_weights(item, group, result_weights)
+    except Exception:
+        _remove_vertex_group(item, group.name)
+        raise
+
+    transaction.add_rollback(partial(_remove_vertex_group, item, group.name))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = group
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Combined sculpt masks into {group.name}",
         )
     )
 
@@ -6179,6 +10053,174 @@ def _remove_vertex_group(item: Any, group_name: str) -> None:
     group = item.vertex_groups.get(group_name)
     if group is not None:
         item.vertex_groups.remove(group)
+
+
+def _require_vertex_group(item: Any, group_name: str) -> Any:
+    group = item.vertex_groups.get(group_name)
+    if group is None:
+        raise ExecutionError(f"Object {item.name!r} has no sculpt mask {group_name!r}.")
+    return group
+
+
+def _vertex_group_weights(item: Any, group: Any) -> dict[int, float]:
+    weights: dict[int, float] = {}
+    for vertex in item.data.vertices:
+        index = int(vertex.index)
+        try:
+            weights[index] = _clamp01(float(group.weight(index)))
+        except RuntimeError:
+            weights[index] = 0.0
+    return weights
+
+
+def _restore_vertex_group_weights(
+    item: Any,
+    group_name: str,
+    weights: Mapping[int, float],
+) -> None:
+    group = item.vertex_groups.get(group_name)
+    if group is None:
+        group = item.vertex_groups.new(name=group_name)
+    _set_vertex_group_weights(item, group, weights)
+
+
+def _set_vertex_group_weights(
+    item: Any,
+    group: Any,
+    weights: Mapping[int, float],
+) -> None:
+    indices = tuple(sorted(int(index) for index in weights))
+    if indices:
+        with suppress(RuntimeError, TypeError, ValueError):
+            group.remove(indices)
+    for index in indices:
+        weight = _clamp01(float(weights[index]))
+        if weight > 0.0:
+            group.add((index,), weight, "REPLACE")
+    item.data.update()
+
+
+def _edited_sculpt_mask_weights(
+    item: Any,
+    operation_type: OperationType,
+    weights: Mapping[int, float],
+    strength: float,
+    iterations: int,
+) -> dict[int, float]:
+    strength = _clamp01(strength)
+    if operation_type is OperationType.INVERT_SCULPT_MASK:
+        return {
+            index: _clamp01(value + ((1.0 - value) - value) * strength)
+            for index, value in weights.items()
+        }
+    if operation_type is OperationType.CLEAR_SCULPT_MASK:
+        return {
+            index: _clamp01(value * (1.0 - strength))
+            for index, value in weights.items()
+        }
+    if operation_type is OperationType.BLUR_SCULPT_MASK:
+        return _blur_sculpt_mask_weights(item, weights, strength, iterations)
+    if operation_type is OperationType.SHARPEN_SCULPT_MASK:
+        return _sharpen_sculpt_mask_weights(weights, strength, iterations)
+    if operation_type is OperationType.GROW_SCULPT_MASK:
+        return _spread_sculpt_mask_weights(item, weights, strength, iterations, grow=True)
+    if operation_type is OperationType.SHRINK_SCULPT_MASK:
+        return _spread_sculpt_mask_weights(item, weights, strength, iterations, grow=False)
+    raise ExecutionError(f"Unsupported sculpt mask operation: {operation_type.value}.")
+
+
+def _blur_sculpt_mask_weights(
+    item: Any,
+    weights: Mapping[int, float],
+    strength: float,
+    iterations: int,
+) -> dict[int, float]:
+    adjacency = _mesh_adjacency(item)
+    current = {index: _clamp01(value) for index, value in weights.items()}
+    for _iteration in range(iterations):
+        updated: dict[int, float] = {}
+        for index, value in current.items():
+            neighbors = adjacency.get(index, set())
+            if neighbors:
+                average = (value + sum(current.get(neighbor, 0.0) for neighbor in neighbors)) / (
+                    len(neighbors) + 1
+                )
+            else:
+                average = value
+            updated[index] = _clamp01(value + (average - value) * strength)
+        current = updated
+    return current
+
+
+def _sharpen_sculpt_mask_weights(
+    weights: Mapping[int, float],
+    strength: float,
+    iterations: int,
+) -> dict[int, float]:
+    current = {index: _clamp01(value) for index, value in weights.items()}
+    for _iteration in range(iterations):
+        current = {
+            index: _clamp01(
+                value + (1.0 - value) * strength
+                if value >= 0.5
+                else value * (1.0 - strength)
+            )
+            for index, value in current.items()
+        }
+    return current
+
+
+def _spread_sculpt_mask_weights(
+    item: Any,
+    weights: Mapping[int, float],
+    strength: float,
+    iterations: int,
+    *,
+    grow: bool,
+) -> dict[int, float]:
+    adjacency = _mesh_adjacency(item)
+    current = {index: _clamp01(value) for index, value in weights.items()}
+    for _iteration in range(iterations):
+        updated: dict[int, float] = {}
+        for index, value in current.items():
+            candidates = [
+                value,
+                *(current.get(neighbor, 0.0) for neighbor in adjacency.get(index, set())),
+            ]
+            target = max(candidates) if grow else min(candidates)
+            updated[index] = _clamp01(value + (target - value) * strength)
+        current = updated
+    return current
+
+
+def _combined_sculpt_mask_weights(
+    source: Mapping[int, float],
+    target: Mapping[int, float],
+    combine_mode: str,
+) -> dict[int, float]:
+    indices = set(source) | set(target)
+    if combine_mode == "replace":
+        return {index: _clamp01(source.get(index, 0.0)) for index in indices}
+    if combine_mode == "add":
+        return {
+            index: _clamp01(target.get(index, 0.0) + source.get(index, 0.0))
+            for index in indices
+        }
+    if combine_mode == "subtract":
+        return {
+            index: _clamp01(target.get(index, 0.0) - source.get(index, 0.0))
+            for index in indices
+        }
+    if combine_mode == "intersect":
+        return {
+            index: _clamp01(min(target.get(index, 0.0), source.get(index, 0.0)))
+            for index in indices
+        }
+    raise ExecutionError(f"Unsupported sculpt mask combine mode: {combine_mode}.")
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
 
 
 def _average_vertex_normal(item: Any, vertex_indices: tuple[int, ...]) -> Any:

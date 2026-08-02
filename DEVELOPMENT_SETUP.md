@@ -50,14 +50,17 @@ API-key resolution uses this priority for the selected provider:
 2. The matching key in the project-root `.env` file for local source development.
 3. Blender's masked, session-only key field.
 
+OpenAI image generation uses the same OpenAI key resolution path: `OPENAI_API_KEY` first, then
+Blender's session key when OpenAI is selected in the extension preferences.
+
 The project-root `.env` file is already created and ignored by Git. Add the key after the equals
 sign without committing or sharing the file:
 
 ```dotenv
 OPENAI_API_KEY=your-api-key-here
 NVIDIA_API_KEY=your-nvidia-key-here
-# Optional, billable texture generation through OpenAI Images:
-OPENAI_IMAGE_GENERATION_ENABLED=false
+# Billable generated-image calls are enabled by default; set false for offline fallback:
+OPENAI_IMAGE_GENERATION_ENABLED=true
 OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_QUALITY=low
 ```
@@ -120,8 +123,8 @@ module and verifies UI registration from the installed artifact rather than the 
 ```powershell
 & 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension validate .\extension
 & 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension build --source-dir .\extension --output-dir .\dist
-& 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension validate .\dist\blender_ai_assistant-0.1.4.zip
-.\.venv\Scripts\python.exe tests\verify_release_package.py .\dist\blender_ai_assistant-0.1.4.zip
+& 'C:\Program Files\Blender Foundation\Blender 5.1\blender.exe' --command extension validate .\dist\blender_ai_assistant-1.5.0.zip
+.\.venv\Scripts\python.exe tests\verify_release_package.py .\dist\blender_ai_assistant-1.5.0.zip
 ```
 
 The source manifest references six pinned pure-Python wheels under `extension/wheels`. End users do

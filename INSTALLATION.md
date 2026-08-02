@@ -15,7 +15,7 @@ not release-qualified yet, even though the bundled Python wheels are cross-platf
 1. Open Blender.
 2. Open `Edit > Preferences > Extensions`.
 3. Open the Extensions menu and choose `Install from Disk`.
-4. Select `blender_ai_assistant-0.1.4.zip` without extracting it.
+4. Select `blender_ai_assistant-1.5.0.zip` without extracting it.
 5. Approve the declared network permission and enable `Blender AI Assistant` if Blender does not
    enable it automatically.
 6. Close Preferences, open the 3D View sidebar, and select the `AI Assistant` tab.
@@ -47,6 +47,10 @@ order:
 The session field is not saved when Blender closes. The source-development `.env` file is plaintext,
 is excluded from the package, and may be synchronized by OneDrive.
 
+Generated image operations use that same OpenAI key lookup. If NVIDIA is selected for planning, keep
+an `OPENAI_API_KEY` available for OpenAI image generation or set
+`OPENAI_IMAGE_GENERATION_ENABLED=false` for deterministic local generation.
+
 ## First Request
 
 1. Open or create a Blender scene.
@@ -69,4 +73,4 @@ files or provider account data.
 
 Source environment creation, Blender CLI validation, fixture generation, and release commands are in
 `DEVELOPMENT_SETUP.md`. The local bridge described as a possible future architecture is not required
-for version 0.1.4.
+for version 1.5.0.

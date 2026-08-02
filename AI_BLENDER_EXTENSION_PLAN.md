@@ -483,9 +483,9 @@ OpenAI model selection is implemented independently of provider selection. The A
 preferences offer GPT-5 Nano, GPT-5.4 Nano, GPT-5.4 Mini, GPT-5.5, and a validated custom model name.
 GPT-5 Nano remains the default so existing cost behavior and live-test baselines do not change.
 
-Per-plan safety limits are also configurable. The defaults are 20 operations, 100 targets per
-operation, and 100 duplicate outputs; Blender controls allow increases up to hard maxima of
-100/500/1,000. The coordinator captures those values, constrains the provider schema and prompt, and
+Per-plan safety limits are also configurable. The defaults and hard maxima are 1,000 operations,
+1,000 targets per operation, and 10,000 duplicate outputs. The coordinator captures those values,
+constrains the provider schema and prompt, and
 locally validates the response with the same immutable values. Plans affecting more than 25 objects
 remain high risk and require Global Undo, recovery-point creation, and a second confirmation.
 
@@ -568,8 +568,10 @@ Implemented texture and shading operations:
 | `IMPORT_PBR_TEXTURE_SET` | Import explicitly listed PBR texture files by role | High |
 | `CREATE_PBR_MATERIAL` | Build a Principled BSDF material from approved PBR image inputs | High |
 | `SET_PBR_TEXTURE_ROLE` | Correct an imported PBR texture role and color space | Medium |
-| `GENERATE_TEXTURE_IMAGE` | Create a generated texture image with optional OpenAI image generation and deterministic local fallback | High |
+| `GENERATE_IMAGE_ASSET` | Create a standalone generated image with default OpenAI image generation and deterministic local fallback | High |
+| `GENERATE_TEXTURE_IMAGE` | Create a generated texture image with default OpenAI image generation and deterministic local fallback | High |
 | `SAVE_GENERATED_TEXTURE` | Save a generated image to an explicit local output path | High |
+| `APPLY_IMAGE_TO_MATERIAL` | Apply a generated or loaded image result to a material texture node | Medium |
 | `ATTACH_GENERATED_TEXTURE` | Attach a generated image to a material texture node | Medium |
 | `CREATE_PAINT_IMAGE` | Create a bounded image datablock for painting | High |
 | `ASSIGN_PAINT_SLOT` | Attach a paint image to a material and UV target | Medium |
@@ -588,6 +590,13 @@ Implemented sculpt-like and mesh-detail operations:
 | `ADD_REMESH_MODIFIER` | Add a non-applied remesh modifier | High |
 | `SCULPT_SMOOTH_REGION` | Smooth a bounded mesh region with vertex-position rollback | High |
 | `APPLY_SCULPT_BRUSH_STROKES` | Apply bounded sculpt-like brush strokes with vertex-position rollback | High |
+| `INVERT_SCULPT_MASK` | Invert an existing sculpt mask with weight rollback | High |
+| `CLEAR_SCULPT_MASK` | Clear an existing sculpt mask with weight rollback | High |
+| `BLUR_SCULPT_MASK` | Blur mask weights through mesh adjacency | High |
+| `SHARPEN_SCULPT_MASK` | Sharpen mask weights through deterministic contrast adjustment | High |
+| `GROW_SCULPT_MASK` | Grow mask influence through mesh adjacency | High |
+| `SHRINK_SCULPT_MASK` | Shrink mask influence through mesh adjacency | High |
+| `COMBINE_SCULPT_MASKS` | Combine two existing masks into a new result mask | High |
 
 Near-term supported prompts include:
 
@@ -607,8 +616,10 @@ Texture and shader validation rules:
 - PBR texture roles are explicit and unique. Roughness, metallic, normal, ambient occlusion,
   displacement, and alpha maps use non-color data.
 - UV operations require explicit UV map names and reject missing or unintended overwrite targets.
-- Generated textures are bounded local image datablocks. They use deterministic local pattern
-  generation by default and can call OpenAI image generation only when explicitly enabled.
+- Generated image assets and generated textures are bounded local image datablocks. They call
+  OpenAI image generation by default, reuse the OpenAI key resolution path including the Blender
+  session key when OpenAI is selected, and use deterministic local pattern generation only when
+  `OPENAI_IMAGE_GENERATION_ENABLED=false`.
 - Paint and bake operations mutate explicit image datablocks and store previous pixels for rollback.
 - The material output and node tree are edited through Blender data APIs with rollback actions.
 
@@ -625,6 +636,8 @@ Sculpting validation rules:
 - Brush strokes that miss all vertices inside their radius snap to the nearest vertex neighborhood
   so minor coordinate/radius mistakes do not roll back the whole approved plan.
 - Original vertex positions are stored before mutation so transaction rollback can restore them.
+- Sculpt masks are stored as vertex groups. Mask edits require existing mask names, operate on
+  bounded weights, and store previous weights for rollback.
 
 Scene context additions added for richer planning:
 
@@ -644,7 +657,7 @@ Deferred future implementation backlog:
   safe mix-chain templates, controlled shader graph templates, and material output validation/repair.
 - Arbitrary Geometry Nodes graph generation. The supported contract now covers only template-driven
   Geometry Nodes preset/group-template modifiers and bounded exposed-input metadata.
-- External image-generation provider integration now exists through the optional OpenAI image
+- External image-generation provider integration now exists through the default OpenAI image
   provider. Cost, provenance, and licensing should still be surfaced clearly before public release.
 - Full Blender render-engine texture baking with progress, cancellation, and partial-output recovery.
   Current bake passes are deterministic bounded image writes.
@@ -662,13 +675,854 @@ Deferred future implementation backlog:
 - Full interactive viewport previews. The supported contract now covers bounded local preview image
   datablocks and bounded low-resolution render-preview images.
 
-The staged roadmap for these deferred features has been merged back into this main plan now that
-the controlled implementations are complete. Future deferred work should be planned directly here
-or in a new focused plan only when a genuinely new feature family is being designed.
+### Phase 11B: Focused Sculpting Expansion Roadmap
+
+Purpose: expand the Blender AI Assistant sculpting surface without allowing arbitrary Python,
+unbounded mesh mutation, or direct model control over Blender sculpt mode. The model continues to
+produce strict controlled-operation JSON, and the extension owns validation, execution, rollback,
+risk classification, and approval.
+
+Current sculpting baseline:
+
+- `SCULPT_SMOOTH_REGION` supports bounded smoothing over material or vertex-group regions.
+- `APPLY_SCULPT_BRUSH_STROKES` supports smooth, inflate, draw, and flatten stroke replay.
+- `CREATE_SCULPT_REGION_FROM_MATERIAL` and `CREATE_SCULPT_REGION_FROM_VERTEX_GROUP` create runtime
+  sculpt regions.
+- `CREATE_SCULPT_MASK` creates vertex-group masks from sculpt regions.
+- `INVERT_SCULPT_MASK`, `CLEAR_SCULPT_MASK`, `BLUR_SCULPT_MASK`, `SHARPEN_SCULPT_MASK`,
+  `GROW_SCULPT_MASK`, `SHRINK_SCULPT_MASK`, and `COMBINE_SCULPT_MASKS` edit vertex-group masks.
+- `CREATE_FACE_SET_FROM_MATERIAL` and `CREATE_FACE_SET_FROM_VERTEX_GROUP` create mesh face-set
+  attributes.
+- `APPLY_SCULPT_REGION_OPERATION` supports smooth, inflate, and flatten region edits.
+- `ADD_MULTIRES_MODIFIER`, `ADD_REMESH_MODIFIER`, `CREATE_REMESHED_COPY`,
+  `CREATE_DYNAMIC_TOPOLOGY_COPY`, and generated mesh application or replacement workflows provide
+  recoverable sculpt preparation paths.
+
+Sculpting design rules:
+
+- Prefer generated copies over in-place destructive mesh changes for high-risk sculpt operations.
+- Every mesh mutation must store enough vertex, attribute, mask, or object-data state for rollback.
+- Brush operations must be bounded by vertex count, stroke count, radius, strength, and operation
+  count.
+- Operations must target explicit objects, sculpt regions, masks, face sets, or generated results.
+- Provider-authored arbitrary brush scripts, Blender operators, and sculpt-mode macros remain out of
+  scope.
+- Plans affecting large regions stay high risk and require the existing high-risk confirmation path.
+- When an operation cannot be deterministic in Object Mode, build it as a generated-copy operation
+  first.
+
+Sculpting Track A: expanded sculpt brushes.
+
+Candidate operation:
+
+- `APPLY_ADVANCED_SCULPT_BRUSH_STROKES`
+
+Candidate brush types:
+
+- `clay`
+- `clay_strips`
+- `crease`
+- `pinch`
+- `scrape`
+- `grab`
+- `snake_hook`
+- `pose`
+
+Implementation notes:
+
+- `clay` and `clay_strips` should build up along averaged normals with a controlled plane clamp.
+- `crease` should combine inward displacement with pinch toward the stroke center.
+- `pinch` should move affected vertices toward the stroke center without changing unrelated
+  regions.
+- `scrape` should flatten high points toward a local plane.
+- `grab` and `snake_hook` require direction vectors and should default to generated-copy mode.
+- `pose` is the riskiest brush and should be implemented last or as generated-copy-only.
+
+Sculpting Track B: symmetry and mirrored sculpting.
+
+Candidate operation:
+
+- `APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES`
+
+Implementation notes:
+
+- The executor should generate mirrored stroke samples locally before mutation.
+- Symmetry should work in object-local coordinates by default so transformed objects behave
+  predictably.
+- Mirrored strokes should be deduplicated when they land on the symmetry plane.
+- The operation should report both original and mirrored affected vertex counts.
+
+Sculpting Track C: sculpt mask operations.
+
+Status: implemented for vertex-group sculpt masks.
+
+Implemented operations:
+
+- `INVERT_SCULPT_MASK`
+- `CLEAR_SCULPT_MASK`
+- `BLUR_SCULPT_MASK`
+- `SHARPEN_SCULPT_MASK`
+- `GROW_SCULPT_MASK`
+- `SHRINK_SCULPT_MASK`
+- `COMBINE_SCULPT_MASKS`
+
+Implementation notes:
+
+- Masks are vertex groups unless Blender-native sculpt masks become necessary.
+- Blur, sharpen, grow, and shrink operate through mesh adjacency so results are deterministic.
+- Previous vertex weights are stored for rollback.
+- Missing mask names reject instead of silently creating masks.
+
+Sculpting Track D: face-set tools.
+
+Candidate operations:
+
+- `CREATE_FACE_SET_FROM_NORMAL_ANGLE`
+- `CREATE_FACE_SET_FROM_POLYGON_AREA`
+- `EXPAND_FACE_SET`
+- `SHRINK_FACE_SET`
+- `MERGE_FACE_SETS`
+- `RENAME_FACE_SET`
+
+Deferred operations:
+
+- `ISOLATE_FACE_SET`
+- `HIDE_FACE_SET`
+- `SHOW_FACE_SETS`
+
+Implementation notes:
+
+- Continue storing face sets as mesh integer attributes rather than relying first on sculpt-mode UI
+  visibility.
+- Normal-angle selection should use an explicit seed face or reference normal plus angle threshold.
+- Area selection should use bounded min/max area values.
+- Visibility operations are deferred because Blender face hiding can be mode-sensitive and harder to
+  represent safely in saved object data.
+
+Sculpting Track E: voxel remesh and dynamic topology workflows.
+
+Candidate operations:
+
+- `CREATE_VOXEL_REMESH_COPY`
+- `CREATE_QUAD_REMESH_PREP_COPY`
+- `APPLY_VOXEL_REMESH_TO_GENERATED_COPY`
+- `CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY`
+
+Implementation notes:
+
+- Start with generated copies only.
+- Require explicit `voxel_size`, `adaptivity`, `preserve_volume`, and max vertex/polygon limits.
+- Never apply remesh directly to the source object in the first implementation.
+- Reuse the existing generated-copy apply/replacement operations for final adoption.
+- If Blender remesh operators are needed, isolate them behind executor-owned parameters and tests.
+
+Sculpting Track F: advanced Multires workflows.
+
+Candidate operations:
+
+- `SUBDIVIDE_MULTIRES_MODIFIER`
+- `SET_MULTIRES_LEVELS`
+- `CREATE_MULTIRES_SCULPT_COPY`
+- `BAKE_MULTIRES_DISPLACEMENT_PREVIEW`
+
+Deferred operations:
+
+- `APPLY_MULTIRES_BASE`
+- `RESHAPE_MULTIRES_FROM_OBJECT`
+
+Implementation notes:
+
+- Keep modifier application deferred unless a generated copy is being created.
+- Levels must be tightly bounded and checked against estimated mesh growth.
+- Displacement preview should write to a bounded image or generated copy, not overwrite source data.
+- Rigged or animated meshes should require explicit rig-safe flags before any generated
+  replacement.
+
+Sculpting Track G: sculpt variant preview and review.
+
+Candidate operations:
+
+- `CREATE_SCULPT_VARIANT_COPY`
+- `CREATE_SCULPT_COMPARISON_PREVIEW`
+- `TAG_SCULPT_VARIANT`
+- `ACCEPT_SCULPT_VARIANT`
+- `REJECT_SCULPT_VARIANT`
+
+Implementation notes:
+
+- Variants should be named and tagged with source object, operation ID, prompt summary, and creation
+  time.
+- Preview should use existing `CREATE_PREVIEW_IMAGE` and `CREATE_RENDER_PREVIEW_IMAGE` concepts.
+- Accepting a variant should route through existing generated mesh apply/replacement safety.
+- Rejection should remove only assistant-created variants.
+
+Future sculpt scene context additions:
+
+- Vertex group names plus approximate weight coverage.
+- Face-set attribute names and face counts.
+- Existing mask names and coverage.
+- Multires, remesh, subdivision, armature, and shape-key modifier state.
+- Object symmetry hints from naming or transforms.
+- Mesh density warnings for high-poly targets.
+
+Sculpting implementation order:
+
+1. Track D face-set expansion, excluding visibility operations.
+2. Track A brush expansion for clay, crease, pinch, and scrape.
+3. Track B symmetry support for existing and new brush operations.
+4. Track E voxel/remesh generated-copy workflows.
+5. Track F Multires workflow expansion.
+6. Track G sculpt variant preview and accept/reject UX.
+7. Revisit grab, snake hook, pose, and face-set visibility after generated-copy review is reliable.
+
+Sculpting acceptance criteria:
+
+- Operation type, catalog, schema, semantic validation, risk, provider instructions, preflight,
+  execution, rollback, scene context, unit tests, Blender execution tests, docs, and progress log are
+  updated for each implemented track.
+- The ZIP is rebuilt for manual Blender testing after implementation.
+- Existing `tests/unit/test_sculpting_future_contract.py` tracks remain `xfail(strict=True)` until
+  their main operation code exists.
+
+### Phase 11C: Advanced Shading Feature Plan
+
+Purpose: deepen material and shader control beyond the current safe presets, image textures, PBR
+roles, color ramps, mix chains, and graph templates while preserving the controlled-operation
+contract. The provider should describe the intended look, but the extension must still own node
+compatibility, socket selection, graph construction, validation, rollback, and preview.
+
+Current shading baseline:
+
+- Approved material presets and procedural material templates.
+- Allowlisted shader node creation, socket value editing, and explicit socket connections.
+- Assistant-created node removal and explicit link disconnection.
+- Bounded color ramp creation and updates.
+- Safe shader mix-chain templates and larger shader graph templates.
+- Material output validation and repair.
+- Image texture, generated image, generated texture, PBR role, UV, bake, and paint image workflows.
+
+Shading design rules:
+
+- Do not allow arbitrary shader graphs from the model.
+- Prefer named shader templates, layer systems, and node compatibility registries over free-form
+  node creation.
+- The model should choose style intent and parameters; the executor should choose exact safe graph
+  wiring.
+- Every node, link, material setting, image assignment, and generated variant must be rollbackable.
+- Keep material edits local to explicit material IDs or explicit object/material pairs.
+- Avoid destructive material consolidation unless the user explicitly asks for it and confirms risk.
+- Use previews before replacing complex material setups when the requested look is broad or
+  subjective.
+
+Shading Track A: shader node compatibility registry.
+
+Goal: make future shader operations safer by giving the extension a local compatibility source of
+truth.
+
+Status: implemented for local node/socket metadata and socket-family compatibility validation.
+
+Implemented work:
+
+- Expand the registry of allowed shader nodes with node categories, input sockets, output sockets,
+  socket data types, color-space expectations, and safe default values.
+- Add compatibility tables for color, float, vector, shader, normal, and geometry sockets.
+- Add local validation that rejects invalid socket pairings before execution.
+
+Remaining work:
+
+- Add scene context summaries for assistant-created node groups, node labels, exposed sockets, and
+  material output status.
+
+Testing:
+
+- Registry coverage for every allowed node type.
+- Rejection for incompatible socket pairs.
+- Contract tests that ensure schema enums come from the registry.
+- Blender graph tests for each supported socket family.
+
+Shading Track B: layered material workflows.
+
+Goal: let users build common stacked looks without arbitrary graph generation.
+
+Status: implemented with controlled material creation, assistant-owned layer nodes, masks, reorder,
+removal, preflight checks, semantic validation, and rollback.
+
+Implemented operations:
+
+- `CREATE_LAYERED_SHADER_MATERIAL`
+- `ADD_SHADER_LAYER`
+- `SET_SHADER_LAYER_MASK`
+- `REORDER_SHADER_LAYERS`
+- `REMOVE_SHADER_LAYER`
+
+Candidate layer types:
+
+- `base`
+- `paint`
+- `dust`
+- `edge_wear`
+- `scratches`
+- `clearcoat`
+- `emission_detail`
+- `decal`
+
+Implementation notes:
+
+- Layers should be represented by assistant-owned node groups with explicit metadata.
+- Masks should come from generated images, loaded textures, procedural patterns, vertex groups, or
+  bounded object-space noise.
+- Reordering should only affect assistant-created layer stacks.
+- Removal should never delete user-authored nodes outside the assistant-owned stack.
+
+Testing:
+
+- Layer creation and reordering preserve material output.
+- Mask assignment rejects missing images, UV maps, or vertex groups.
+- Rollback restores the previous node tree.
+- Protected user nodes remain untouched.
+
+Shading Track C: procedural pattern expansion.
+
+Goal: broaden procedural shading without requiring external image assets.
+
+Status: implemented with template-driven procedural node sets, bounded mapping/scale/contrast/
+roughness/bump parameters, preflight checks, semantic validation, and rollback.
+
+Implemented operations:
+
+- `CREATE_PROCEDURAL_PATTERN_NODE_SET`
+- `CREATE_EDGE_WEAR_SHADER`
+- `CREATE_TRIPLANAR_MAPPING_SETUP`
+- `CREATE_OBJECT_SPACE_GRADIENT_SHADER`
+- `CREATE_CURVATURE_STYLE_MASK`
+
+Candidate patterns:
+
+- `marble`
+- `granite`
+- `brushed_metal`
+- `oxidation`
+- `peeling_paint`
+- `ceramic_crackle`
+- `carbon_fiber`
+- `fabric_weave`
+- `skin_pores`
+- `water_ripples`
+
+Implementation notes:
+
+- Keep patterns as templates with bounded exposed inputs instead of raw node graphs.
+- Use object-space or generated-coordinate mapping when UVs are missing.
+- Curvature-style masks should be approximations from controlled geometry or bake data, not full
+  arbitrary mesh analysis in the provider.
+- Pattern parameters should include scale, contrast, roughness influence, bump influence, and seed.
+
+Testing:
+
+- Each pattern creates a connected material output.
+- Missing UV maps fall back to object coordinates when allowed.
+- Numeric parameters are bounded.
+- Rollback removes all assistant-created nodes.
+
+Shading Track D: reference-based material matching.
+
+Goal: support prompts like "make this look like the reference image" without sending uncontrolled
+data or generating arbitrary shader graphs.
+
+Status: implemented with deterministic local palette metadata, reference-material creation,
+bounded material matching, lookdev preview images, preflight checks, semantic validation, and
+rollback.
+
+Implemented operations:
+
+- `EXTRACT_MATERIAL_PALETTE_FROM_IMAGE`
+- `CREATE_MATERIAL_FROM_REFERENCE_IMAGE`
+- `MATCH_MATERIAL_TO_REFERENCE`
+- `CREATE_LOOKDEV_PREVIEW`
+
+Implementation notes:
+
+- Reference images must be explicit local files, HTTPS image URLs, or generated image results.
+- Extraction should produce bounded local metadata: palette colors, roughness guess, metallic guess,
+  pattern hints, and confidence.
+- The final material should map to existing material presets, PBR roles, procedural templates, or
+  layered workflows.
+- Do not upload hidden file paths or arbitrary image metadata.
+
+Testing:
+
+- Palette extraction is deterministic for fixture images.
+- Unsupported image sources reject.
+- Generated material output remains within the controlled shader templates.
+- Lookdev preview images are bounded and rollback-safe.
+
+Shading Track E: specialized material families.
+
+Goal: add higher-quality controlled materials for common Blender looks that are currently too broad
+for the generic material preset path.
+
+Status: implemented with controlled Principled BSDF templates and safe optional-socket fallbacks.
+
+Implemented operations:
+
+- `CREATE_GLASS_MATERIAL`
+- `CREATE_TRANSLUCENT_MATERIAL`
+- `CREATE_EMISSION_MATERIAL`
+- `CREATE_VOLUME_MATERIAL`
+- `CREATE_TOON_SHADER_MATERIAL`
+- `CREATE_ANISOTROPIC_MATERIAL`
+
+Implementation notes:
+
+- Use Blender-version-aware Principled BSDF inputs and safe fallbacks.
+- Keep transparency and alpha behavior explicit because it affects render settings and object
+  sorting.
+- Volume materials should be high risk and bounded to explicit material targets.
+- Toon and anisotropic materials should be template-driven, not arbitrary node graphs.
+
+Testing:
+
+- Material families compile on Blender 5.1.
+- Optional sockets are handled safely when Blender changes input names.
+- Render/preview tests verify output nodes stay connected.
+- Alpha and volume settings are reversible.
+
+Shading Track F: shader cleanup, optimization, and repair.
+
+Goal: let the assistant clean assistant-owned shader work and catch broken material setups.
+
+Status: implemented with assistant-owned cleanup, material consolidation, layout normalization,
+socket compatibility validation, material output repair, preflight checks, semantic validation, and
+rollback.
+
+Implemented operations:
+
+- `REMOVE_UNUSED_ASSISTANT_SHADER_NODES`
+- `CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS`
+- `NORMALIZE_SHADER_NODE_LAYOUT`
+- `VALIDATE_SHADER_COMPATIBILITY`
+- `REPAIR_BROKEN_SHADER_LINKS`
+
+Implementation notes:
+
+- Cleanup should operate only on assistant-created nodes/materials unless the user explicitly opts
+  into broader cleanup.
+- Duplicate material consolidation should be high risk because it changes object material
+  references.
+- Node layout normalization should be cosmetic and low risk when it only moves node positions.
+- Repair should prefer clarification over guessing when multiple valid outputs exist.
+
+Testing:
+
+- Cleanup does not remove protected user nodes.
+- Consolidation updates object slots correctly and rolls back.
+- Compatibility validation reports actionable errors without mutating.
+- Repair restores a valid material output when a single safe fix exists.
+
+Shading Track G: material variants and review.
+
+Goal: make subjective shading changes easier to compare before committing.
+
+Status: implemented with material copying, variant metadata, comparison preview images, explicit
+target acceptance, rejection metadata, preflight checks, semantic validation, and rollback.
+
+Implemented operations:
+
+- `CREATE_MATERIAL_VARIANT`
+- `CREATE_SHADER_COMPARISON_PREVIEW`
+- `TAG_MATERIAL_VARIANT`
+- `ACCEPT_MATERIAL_VARIANT`
+- `REJECT_MATERIAL_VARIANT`
+
+Implementation notes:
+
+- Variants should copy material data, preserve source material links, and tag provenance.
+- Preview should reuse `CREATE_PREVIEW_IMAGE` and `CREATE_RENDER_PREVIEW_IMAGE` concepts.
+- Accepting a variant should explicitly assign it to selected targets or replace a named material.
+- Rejection should delete only assistant-created material variants.
+
+Testing:
+
+- Variant creation preserves the original material.
+- Accept/reject affects only explicit targets.
+- Preview generation works for material and object targets.
+- Rollback restores material slots and removes variant datablocks.
+
+Future shading scene context additions:
+
+- Assistant-owned node group metadata.
+- Material variant provenance.
+- Node socket compatibility summaries for existing assistant-created nodes.
+- Texture coordinate and mapping summaries.
+- Alpha, blend mode, backface culling, displacement method, and render-engine-sensitive material
+  settings.
+- Approximate material usage counts across objects.
+
+Shading provider instruction updates:
+
+- Prefer material presets, procedural templates, layer operations, and shader graph templates over
+  low-level node editing.
+- Ask for clarification when a requested visual style depends on a missing reference image,
+  selected target, material, UV map, or texture source.
+- Never invent node socket names or free-form graph structures.
+- Use material variants and previews for broad subjective requests like "make it more cinematic" or
+  "try a different style."
+- Keep generated images and external texture sources explicit.
+
+Shading safety and risk:
+
+- Low-level node value edits are low or medium risk depending on target scope.
+- External image sources, generated images, bake outputs, material consolidation, volume materials,
+  and variant acceptance are medium or high risk.
+- Cleanup and repair must protect user-authored nodes by default.
+- Any operation that changes object material assignments must support rollback and explicit target
+  validation.
+
+Shading implementation order:
+
+Completed:
+
+1. Track A shader compatibility registry.
+2. Track B layered material workflows.
+3. Track C procedural pattern expansion.
+4. Track D reference-based material matching.
+5. Track E specialized material families.
+6. Track F validation, cleanup, and repair using the registry.
+7. Track G material variants and review.
+
+Remaining future work:
+
+- Add deeper scene context summaries for existing shader layer stacks, variants, mapping nodes, and
+  render-engine-sensitive material settings.
+- Add broader Blender runtime regression coverage once Blender is available in the test shell.
+
+Shading acceptance criteria:
+
+- Each implemented track updates operation models, catalog, schema, semantic validation, risk,
+  provider instructions, preflight simulation, executor behavior, rollback, docs, tests, and the
+  progress log.
+- Tests cover contract validation, protected-node behavior, rollback, material output validity, and
+  Blender execution.
+- The release ZIP is rebuilt only after the release gate passes or a documented external install
+  issue is isolated.
 
 The first milestone for this phase is complete when schema validation, local semantics, risk
 assessment, provider instructions, execution, rollback, Python contract tests, and Blender execution
 tests cover the implemented operations.
+
+### Phase 11D: Advanced UV Editing Feature Plan
+
+Purpose: deepen UV control beyond the current deterministic `CREATE_UV_MAP`, `ASSIGN_UV_MAP`,
+`UNWRAP_UV_MAP`, and `PACK_UV_ISLANDS` operations while keeping all mesh edits explicit,
+bounded, rollbackable, and locally validated. The provider should describe the desired UV outcome,
+but the extension must own seam decisions, island transforms, packing, overlap checks, and texture
+assignment behavior.
+
+Implementation status: UV Tracks A-H are implemented in the controlled operation contract,
+provider instructions, preflight simulation, rollback-capable executor, active contract tests, and
+the general Blender execution test. The current implementation uses deterministic bounded UV
+transforms and local review artifacts; scene-context enrichment remains a future improvement.
+
+Current UV baseline:
+
+- Create named UV maps on explicit mesh targets.
+- Assign existing UV maps to controlled image texture nodes.
+- Write bounded generated UV coordinates through explicit unwrap operations.
+- Normalize and pack existing UV coordinates with bounded margin values.
+- Use UV-space image painting and fills only on explicit image results.
+- Bake deterministic bounded texture passes into explicit target images.
+
+UV design rules:
+
+- Never let the model issue arbitrary edit-mode commands or Blender Python.
+- UV edits must target explicit mesh object IDs and explicit UV map names.
+- Existing UV maps must not be overwritten unless the operation has an explicit overwrite flag.
+- Seam, island, projection, and packing behavior should be template-driven, not free-form geometry
+  scripting from the provider.
+- Operations that modify mesh UV data should snapshot prior UV coordinates for rollback.
+- Any operation that changes material slots, texture nodes, or UV map assignment must reference
+  explicit material, image, and object IDs.
+- Prefer creating reviewable UV variants before replacing complex user-authored UV maps.
+- Keep generated UV outputs bounded by target count, polygon count, image size, and island count.
+
+UV Track A: UV context and diagnostics.
+
+Goal: give the assistant enough local information to make safer UV plans and explain failures.
+
+Implemented operations:
+
+- `INSPECT_UV_MAP`
+- `CREATE_UV_DIAGNOSTIC_REPORT`
+- `CREATE_UV_OVERLAP_PREVIEW`
+- `CREATE_UV_STRETCH_PREVIEW`
+
+Implementation notes:
+
+- Add scene context summaries for UV map names, active/render UV maps, island count estimates,
+  approximate UV bounds, overlap risk, missing UVs, and material/image usage.
+- Diagnostic report results should be local metadata, not hidden file reads or screenshots.
+- Preview images should be bounded like other generated preview images and should not require a
+  render unless explicitly requested.
+
+Testing:
+
+- Meshes with no UV map return clear diagnostics.
+- Existing UV maps report bounds and active/render status.
+- Preview image dimensions stay within limits.
+- No mesh data is mutated by inspect/report/preview operations.
+
+UV Track B: seam and island definition.
+
+Goal: allow controlled seam creation and island setup without arbitrary edit-mode scripting.
+
+Implemented operations:
+
+- `MARK_UV_SEAMS_BY_ANGLE`
+- `MARK_UV_SEAMS_BY_MATERIAL`
+- `MARK_UV_SEAMS_BY_EDGE_SET`
+- `CLEAR_UV_SEAMS`
+- `CREATE_UV_ISLANDS_FROM_SEAMS`
+
+Implementation notes:
+
+- Angle-based seams should use bounded angle thresholds and mesh edge count limits.
+- Material-based seams should require explicit material IDs.
+- Edge-set seams should use locally generated edge-set or face-set references, not provider-invented
+  mesh indices unless the context explicitly exposed them.
+- Clearing seams should support assistant-owned-only metadata where possible.
+- Seam changes must snapshot prior seam flags for rollback.
+
+Testing:
+
+- Angle thresholds reject outside allowed ranges.
+- Material seam creation rejects missing material assignments.
+- Clearing seams restores correctly on rollback.
+- Protected user seams are preserved when assistant-owned-only is enabled.
+
+UV Track C: unwrap and projection expansion.
+
+Goal: support more practical UV creation workflows than one generic unwrap path.
+
+Implemented operations:
+
+- `SMART_PROJECT_UV_MAP`
+- `CUBE_PROJECT_UV_MAP`
+- `CYLINDER_PROJECT_UV_MAP`
+- `SPHERE_PROJECT_UV_MAP`
+- `CAMERA_PROJECT_UV_MAP`
+- `LIGHTMAP_UNWRAP_UV_MAP`
+
+Implementation notes:
+
+- Projection operations should require explicit method parameters, margin, scale, rotation, and
+  create/overwrite behavior.
+- Camera projection must require an explicit camera ID or active-camera confirmation.
+- Lightmap unwrap should create a separate UV map by default to avoid destroying artist UVs.
+- Fallback behavior should prefer clarification over guessing when the mesh is not suitable for a
+  projection type.
+
+Testing:
+
+- Each projection creates UV coordinates inside bounded ranges.
+- Existing UV maps reject unless overwrite is true.
+- Camera projection rejects missing camera references.
+- Rollback restores prior UV coordinates or removes newly created UV maps.
+
+UV Track D: island transform and layout editing.
+
+Goal: let users make targeted layout changes after unwrap.
+
+Implemented operations:
+
+- `SELECT_UV_ISLANDS_BY_MATERIAL`
+- `TRANSFORM_UV_ISLANDS`
+- `ALIGN_UV_ISLANDS`
+- `DISTRIBUTE_UV_ISLANDS`
+- `SCALE_UV_ISLANDS_TO_BOUNDS`
+- `PIN_UV_ISLANDS`
+- `UNPIN_UV_ISLANDS`
+
+Implementation notes:
+
+- Island references should be created locally through selection/inspection operations before later
+  operations can transform them.
+- Transform values should be bounded translation, rotation, and scale in UV space.
+- Alignment and distribution should use approved modes such as left, right, top, bottom, center,
+  horizontal, and vertical.
+- Pinning should snapshot previous pin state for rollback.
+
+Testing:
+
+- Island references cannot be forward-referenced.
+- Transform operations reject zero scale and non-finite values.
+- Alignment/distribution preserve UV map existence and material assignments.
+- Rollback restores coordinates and pin states.
+
+UV Track E: texel density, packing, and UDIM-ready layout.
+
+Goal: make UV layouts more production-useful for textured models.
+
+Implemented operations:
+
+- `SET_UV_TEXEL_DENSITY`
+- `NORMALIZE_UV_TEXEL_DENSITY`
+- `PACK_UV_ISLANDS_ADVANCED`
+- `MOVE_UV_ISLANDS_TO_TILE`
+- `CREATE_UDIM_TILE_LAYOUT`
+- `VALIDATE_UDIM_LAYOUT`
+
+Implementation notes:
+
+- Texel density should require target texture resolution and unit scale.
+- Advanced packing should expose bounded rotate, margin, tile, preserve-orientation, and
+  preserve-pinned options.
+- UDIM operations should be disabled by default until the UI clearly marks them as advanced.
+- Tile movement must be bounded to a small approved tile range.
+
+Testing:
+
+- Density operations produce deterministic scale changes.
+- Advanced packing rejects excessive tile ranges and huge island counts.
+- UDIM validation reports overlaps and out-of-range tiles without mutation.
+- Rollback restores previous coordinates.
+
+UV Track F: UV cleanup and repair.
+
+Goal: detect and fix common UV layout problems safely.
+
+Implemented operations:
+
+- `RELAX_UV_ISLANDS`
+- `MINIMIZE_UV_STRETCH`
+- `REPAIR_UV_BOUNDS`
+- `MERGE_DUPLICATE_UV_MAPS`
+- `REMOVE_UNUSED_ASSISTANT_UV_MAPS`
+- `VALIDATE_UV_MAP`
+
+Implementation notes:
+
+- Relax/stretch reduction should use bounded iterations and strength.
+- Bounds repair should optionally scale/translate UVs into a target tile.
+- Duplicate UV map merging is high risk because materials and texture nodes may rely on names.
+- Removing UV maps should default to assistant-created UV maps only.
+- Validation should report actionable issues before mutating.
+
+Testing:
+
+- Validation catches missing UVs, out-of-bounds UVs, overlaps, and zero-area islands.
+- Cleanup does not remove protected user UV maps.
+- Merge updates texture-node UV references only when explicitly requested.
+- Rollback restores UV maps and texture-node references.
+
+UV Track G: texture-aware UV workflows.
+
+Goal: connect UV editing with generated, loaded, painted, baked, and PBR textures.
+
+Implemented operations:
+
+- `FIT_UV_ISLANDS_TO_IMAGE_REGION`
+- `CREATE_TEXTURE_ATLAS_LAYOUT`
+- `ASSIGN_ATLAS_TEXTURE_REGIONS`
+- `BAKE_UV_LAYOUT_GUIDE_IMAGE`
+- `CREATE_UV_GRID_TEST_MATERIAL`
+
+Implementation notes:
+
+- Image-region fitting should require explicit image result IDs and normalized UV bounds.
+- Texture atlas layout should create deterministic region metadata before assigning materials or
+  texture nodes.
+- UV guide images should be local preview/debug assets and must be bounded by image-size limits.
+- Grid test materials should be assistant-created and easy to remove.
+
+Testing:
+
+- Region bounds reject invalid rectangles.
+- Atlas assignments preserve explicit material and image references.
+- UV guide images are generated locally and rollback-safe.
+- Grid test materials do not overwrite user materials unless explicitly assigned.
+
+UV Track H: UV variants and review.
+
+Goal: support experimental UV edits without immediately destroying working layouts.
+
+Implemented operations:
+
+- `CREATE_UV_MAP_VARIANT`
+- `TAG_UV_VARIANT`
+- `CREATE_UV_COMPARISON_PREVIEW`
+- `ACCEPT_UV_VARIANT`
+- `REJECT_UV_VARIANT`
+
+Implementation notes:
+
+- Variants should duplicate UV maps on the same mesh and tag provenance.
+- Accepting a variant should explicitly replace or switch active/render UV maps.
+- Rejection should remove only assistant-created UV variants.
+- Comparison previews should show source and variant layout metadata or bounded guide images.
+
+Testing:
+
+- Variant creation preserves the original UV map.
+- Accept/reject affects only explicit targets and UV map names.
+- Preview generation is bounded and rollback-safe.
+- Result references enforce correct ordering and result kinds.
+
+Future UV scene context additions:
+
+- Per-object UV map list with active/render flags.
+- Assistant-created UV map provenance and variant metadata.
+- Approximate island count, UV bounds, out-of-bounds count, and overlap/stretched-area hints.
+- Texture-node UV map usage summaries.
+- Material slot to UV map dependency summaries.
+- Optional low-resolution UV layout preview image metadata.
+
+UV provider instruction updates:
+
+- Prefer UV diagnostics and variants before destructive unwraps on complex models.
+- Ask for clarification when the user does not specify target object, UV map name, projection type,
+  texture/image target, or whether overwriting is allowed.
+- Do not invent mesh edge indices, island IDs, UV map names, material IDs, or image IDs.
+- Use texture-aware UV operations only when an explicit image, generated image, baked image, or PBR
+  texture set is present.
+- Use preview and variant operations for broad subjective requests like "make the UVs better" or
+  "optimize this for texturing."
+
+UV safety and risk:
+
+- Inspection, diagnostics, layout previews, and grid test material creation are low or medium risk.
+- Seam editing, unwrap/projection, relax/stretch repair, packing, atlas assignment, and UV map
+  replacement are medium or high risk.
+- Operations that overwrite UV maps, merge/remove UV maps, move islands across UDIM tiles, or update
+  texture-node UV references require explicit confirmation.
+- All UV coordinate edits must reject non-finite values and snapshot prior coordinates for rollback.
+
+Implemented UV delivery order:
+
+1. Track A UV context and diagnostics.
+2. Track H UV variants and review foundation.
+3. Track C unwrap and projection expansion.
+4. Track D island transform and layout editing.
+5. Track E texel density, advanced packing, and UDIM-ready layout.
+6. Track F cleanup and repair.
+7. Track G texture-aware UV workflows.
+8. Track B seam and island definition after edge/face reference exposure is stable.
+
+UV acceptance criteria:
+
+- Each implemented track updates operation models, catalog, schema, semantic validation, risk,
+  provider instructions, preflight simulation, executor behavior, rollback, docs, tests, and the
+  progress log.
+- Tests cover contract validation, result-reference ordering, protected user UV maps, rollback,
+  active/render UV map behavior, texture-node UV references, and Blender execution.
+- The release ZIP is rebuilt only after the release gate passes or a documented external install
+  issue is isolated.
+
+UV test scaffolding status:
+
+- `tests/unit/test_uv_future_contract.py` covers planned Tracks A-H as strict expected-failure
+  contract tests.
+- These tests should be promoted track by track as schemas, validation, provider instructions, and
+  executor behavior are implemented.
 
 ## Testing Strategy After Code Changes
 

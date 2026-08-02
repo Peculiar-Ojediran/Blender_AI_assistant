@@ -46,7 +46,7 @@ def verify_archive(archive_path: Path) -> None:
 
         manifest = tomllib.loads(archive.read("blender_manifest.toml").decode("utf-8"))
         assert manifest["id"] == "blender_ai_assistant"
-        assert manifest["version"] == "0.1.4"
+        assert manifest["version"] == "1.5.0"
         assert manifest["blender_version_min"] == "5.1.0"
         assert manifest["permissions"]["network"]
 
@@ -76,7 +76,7 @@ def main() -> None:
     archive_path = (
         Path(sys.argv[1])
         if len(sys.argv) > 1
-        else Path("dist/blender_ai_assistant-0.1.4.zip")
+        else Path("dist/blender_ai_assistant-1.5.0.zip")
     )
     verify_archive(archive_path.resolve())
 

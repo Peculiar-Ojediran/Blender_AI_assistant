@@ -21,6 +21,7 @@ from ..providers.nvidia import (
 )
 from ..providers.openai import (
     CUSTOM_MODEL_OPTION,
+    DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_TIMEOUT_SECONDS,
@@ -123,9 +124,9 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         )
         max_output_tokens: IntProperty(
             name="Maximum Output Tokens",
-            default=4_096,
+            default=DEFAULT_MAX_OUTPUT_TOKENS,
             min=512,
-            max=32_768,
+            max=131_072,
         )
         default_context_scope: EnumProperty(
             name="Default Context",

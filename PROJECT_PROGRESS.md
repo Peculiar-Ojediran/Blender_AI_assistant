@@ -1,10 +1,8 @@
 # Project Progress
 
-All timestamps use the `America/Toronto` timezone. Add new entries in chronological order, with the earliest entry at the top and the newest entry at the bottom.
+Add new entries in chronological order, with the earliest entry at the top and the newest entry at the bottom.
 
-## 2026-06-19 10:29:01 -04:00
-
-### Progress Log Initialized
+## Progress Log Initialized
 
 - Established `PROJECT_PROGRESS.md` as the project change log.
 - Recorded the existing planning baseline completed before this log was created.
@@ -12,9 +10,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Expanded the plan around controlled operations, structured AI-response validation, context budgets, Blender main-thread constraints, operator context, undo reliability, approval UX, early packaging validation, and product differentiation.
 - No implementation code has been added; the project remains in the planning phase.
 
-## 2026-06-19 10:39:49 -04:00
-
-### Development Dependencies Installed and Verified
+## Development Dependencies Installed and Verified
 
 - Confirmed Blender 5.1.0 is installed with bundled Python 3.13.9.
 - Created a workspace-local `.venv` from Blender's Python interpreter.
@@ -25,9 +21,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified `pip check`, 3 pytest tests, Ruff, Mypy, schema validation, and Blender 5.1 background execution.
 - Chose a provider-neutral direct HTTPS approach for the initial runtime; no OpenAI or Anthropic SDK has been added.
 
-## 2026-06-19 10:56:43 -04:00
-
-### OpenAI Provider Foundation Added
+## OpenAI Provider Foundation Added
 
 - Selected OpenAI as the initial AI provider and GPT-5.5 as the initial model.
 - Kept the provider boundary replaceable and used direct HTTPS instead of adding an SDK.
@@ -40,9 +34,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Built and validated `dist/blender_ai_assistant-0.1.0.zip`.
 - Verified 8 pytest tests, Ruff, Mypy, Blender background execution, source manifest validation, archive validation, and package contents.
 
-## 2026-06-19 11:08:18 -04:00
-
-### Project Package Skeleton Created
+## Project Package Skeleton Created
 
 - Added `ARCHITECTURE.md` with the request flow, dependency direction, threading boundary, and implementation order.
 - Added workflow modules for coordination, asynchronous runtime handling, and state.
@@ -55,9 +47,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 32 extension module imports, 8 pytest tests, Ruff, Mypy across 36 source files, Blender registration, source validation, archive build, and archive validation.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the complete package skeleton.
 
-## 2026-06-19 16:29:14 -04:00
-
-### Controlled Operation Contract Integrated
+## Controlled Operation Contract Integrated
 
 - Added typed plan status, operation type, risk, operation, plan, and risk-assessment models.
 - Added a local catalog for ten MVP operation types and their safety metadata.
@@ -71,9 +61,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 35 pytest tests, Ruff, Mypy, Blender 5.1 contract validation, source validation, archive build, and archive validation.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the integrated contract.
 
-## 2026-06-19 16:46:57 -04:00
-
-### MVP UX Design Completed
+## MVP UX Design Completed
 
 - Added `UX_DESIGN.md` as the implementation specification for the Blender-native interface.
 - Chose a compact `AI Assistant` tab in the 3D View sidebar with Assistant, Plan, Context, and History sections.
@@ -87,9 +75,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Corrected the Core Interaction Flow heading in the main project plan and linked the UX specification from architecture and planning documents.
 - No runtime UI code was added during this design milestone.
 
-## 2026-06-19 18:52:24 -04:00
-
-### Blender UX Implemented
+## Blender UX Implemented
 
 - Registered an `AI Assistant` tab in the 3D View sidebar.
 - Added Assistant, Context, Plan, and History panels with state-dependent visibility and controls.
@@ -103,9 +89,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 39 pytest tests, Ruff, Mypy across 38 source files, Blender 5.1 UI smoke tests, source validation, archive build, and archive validation.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the implemented UX.
 
-## 2026-06-19 20:28:03 -04:00
-
-### Scene Context System Implemented
+## Scene Context System Implemented
 
 - Added Blender-independent immutable scene-context records and validated context options.
 - Added deterministic active/selected-first object budgeting with separate detail and summary limits.
@@ -121,9 +105,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 44 pytest tests, Ruff, Mypy across 40 source files, Blender 5.1 background tests, source validation, archive build, and archive validation.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the scene context system.
 
-## 2026-06-20 01:00:24 -04:00
-
-### Pre-Planning Safety Gaps Resolved
+## Pre-Planning Safety Gaps Resolved
 
 - Added random context snapshot IDs that provider plans must echo exactly.
 - Added Blender `session_uid` and deterministic state fingerprints to local target references.
@@ -140,9 +122,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 51 pytest tests, Ruff, Mypy across 41 source files, Blender 5.1 background tests, source validation, archive build, and archive validation.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the pre-planning safety changes.
 
-## 2026-06-20 01:45:49 -04:00
-
-### Current-Stage Integration Verified
+## Current-Stage Integration Verified
 
 - Audited imports and contracts across context, provider, controlled operations, risk, workflow state, UI, and packaging modules.
 - Added a normal-Python integration test covering serialized scene context, mocked OpenAI Structured Outputs, snapshot binding, semantic plan validation, typed operations, and local risk assessment.
@@ -154,9 +134,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified 52 pytest tests, Ruff, Mypy across 43 source files, Blender 5.1 source integration, source/archive validation, installed-package imports, and fresh-process UI registration.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` after integration verification.
 
-## 2026-06-20 01:59:16 -04:00
-
-### AI Planning Layer Implemented
+## AI Planning Layer Implemented
 
 - Connected Blender prompt submission to the OpenAI Responses API provider through a provider-neutral coordinator.
 - Added generation-scoped daemon workers, queue-only result handoff, logical cancellation, superseded-response rejection, and non-blocking shutdown.
@@ -175,9 +153,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - No live OpenAI request or API key was used; provider behavior remains covered with mocked responses.
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the AI planning layer.
 
-## 2026-06-20 02:43:16 -04:00
-
-### AI Planning Layer Hardened
+## AI Planning Layer Hardened
 
 - Made validated operation payloads recursively immutable, including nested mappings and lists.
 - Made context snapshot mismatches terminal so they cannot trigger a provider repair request.
@@ -200,9 +176,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Installed the rebuilt archive into an isolated extension repository and verified packaged-module
   imports plus UI registration in a fresh Blender process.
 
-## 2026-06-20 13:55:57 -04:00
-
-### Controlled Execution Layer Implemented
+## Controlled Execution Layer Implemented
 
 - Implemented complete scene-aware preflight for ready plans, including retained-snapshot checks,
   active-scene and Object Mode requirements, live target identity/fingerprint validation, linked
@@ -237,9 +211,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the controlled execution layer. No live OpenAI
   request or API key was used.
 
-## 2026-06-20 16:15:54 -04:00
-
-### Cost-Efficient OpenAI Development Defaults Added
+## Cost-Efficient OpenAI Development Defaults Added
 
 - Changed the default planning model from `gpt-5.5` to `gpt-5-nano`.
 - Changed the default reasoning effort from medium to low and made reasoning effort configurable in
@@ -262,9 +234,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip`; no live OpenAI request was made.
 
 
-## 2026-06-20 19:34:23 -04:00
-
-### Live OpenAI Smoke Test Passed
+## Live OpenAI Smoke Test Passed
 
 - Reran only the opt-in live structured-plan smoke test after API quota became available.
 - Confirmed `gpt-5-nano-2025-08-07` returned a completed, schema-constrained plan for one cube named
@@ -273,9 +243,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Live test result: 1 passed in 3.75 seconds.
 - No other tests were run and no source code changes were required.
 
-## 2026-06-20 19:46:37 -04:00
-
-### Phase 7 Safety Model Implemented
+## Phase 7 Safety Model Implemented
 
 - Added a Blender-independent safety policy that recomputes authorization from the retained
   immutable plan rather than trusting provider claims or mutable UI presentation fields.
@@ -303,9 +271,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with the Phase 7 safety model. No live OpenAI request
   was made during this phase.
 
-## 2026-06-20 19:58:56 -04:00
-
-### Phase 8 Model Provider Integration Completed
+## Phase 8 Model Provider Integration Completed
 
 - Kept OpenAI as the single MVP provider behind Blender-independent request, response, usage, and
   provider protocol types so a future adapter cannot bypass local planning validation.
@@ -328,9 +294,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` with Phase 8. No live OpenAI request was made during
   this phase.
 
-## 2026-06-20 22:55:32 -04:00
-
-### Phases 9 and 10 Testing and Distribution Completed
+## Phases 9 and 10 Testing and Distribution Completed
 
 - Added deterministic simple, messy, and 1,000-object Blender fixtures plus a reproducible Blender
   generator so sample scenes contain no production data or credentials.
@@ -358,9 +322,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Rebuilt `dist/blender_ai_assistant-0.1.0.zip` as a self-contained 536,869-byte package. No live
   OpenAI request was made during these phases.
 
-## 2026-06-20 23:02:49 -04:00
-
-### Ten-Scenario Live OpenAI Matrix Completed With One Failure
+## Ten-Scenario Live OpenAI Matrix Completed With One Failure
 
 - Replaced the single live smoke case with exactly ten parameterized live scenarios and disabled
   automatic transient retries, enforcing a maximum of ten tests and ten API requests per run.
@@ -379,9 +341,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Preserved the failing clarification expectation as a regression target and moved diagnostics ahead
   of assertions for future runs. No additional live requests were made after reaching the ten-test cap.
 
-## 2026-06-20 23:59:47 -04:00
-
-### Multi-Model Selection Added
+## Multi-Model Selection Added
 
 - Added a Blender-native model dropdown to both the Assistant panel and extension preferences.
 - Added GPT-5 Nano, GPT-5.4 Nano, GPT-5.4 Mini, and GPT-5.5 catalog choices based on the current
@@ -401,9 +361,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Built `dist/blender_ai_assistant-0.1.1.zip` as a 537,527-byte self-contained package. No API key or
   live OpenAI request was used during this feature verification.
 
-## 2026-06-21 19:22:20 -04:00
-
-### Configurable Controlled-Operation Limits Added
+## Configurable Controlled-Operation Limits Added
 
 - Added persistent Blender numeric controls for maximum operations per plan, existing targets per
   operation, and total objects created by one duplicate operation.
@@ -427,9 +385,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Built `dist/blender_ai_assistant-0.1.2.zip` as a 539,175-byte self-contained package. No API key or
   live OpenAI request was used during this feature verification.
 
-## 2026-06-21 19:30:47 -04:00
-
-### Expanded Controlled-Operation Limits
+## Expanded Controlled-Operation Limits
 
 - Kept the conservative defaults at 20 operations, 100 existing targets, and 100 duplicate outputs,
   while raising the selectable hard maxima to 100 operations, 500 targets, and 1,000 outputs.
@@ -450,9 +406,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Built `dist/blender_ai_assistant-0.1.3.zip` as a 539,252-byte self-contained package. No API key or
   live OpenAI request was used during this feature verification.
 
-## 2026-06-21 22:23:21 -04:00
-
-### GitHub Publication Prepared
+## GitHub Publication Prepared
 
 - Added public-repository ignore rules for local `.env`, virtual environments, generated release
   archives, test caches, local agent metadata, operating-system metadata, and Blender backup files.
@@ -465,9 +419,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Re-ran the complete non-billable release gate before publication: 99 tests passed, 10 live tests
   were skipped, and all Blender, package, secret, and clean-install checks passed.
 
-## 2026-06-21 22:26:08 -04:00
-
-### GitHub Publication Completed
+## GitHub Publication Completed
 
 - Created a clean Git history with initial release commit `9f916a7` authored by Peculiar Ojediran.
 - Published the `main` branch to
@@ -475,9 +427,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified the remote branch resolves to the published commit and the working tree contains no
   uncommitted source changes.
 
-## 2026-06-21 22:46:08 -04:00
-
-### GitHub Release Published
+## GitHub Release Published
 
 - Installed and authorized GitHub CLI for release management using the existing GitHub account.
 - Created annotated tag `v0.1.3` for verified commit `40eb074` and pushed the tag to GitHub.
@@ -486,9 +436,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified GitHub reports the uploaded asset as 539,249 bytes with SHA-256 digest
   `c2ed9fff04d6073fe6c0d7ed43a0a2c17eb7163dccee560aec27c13023d71121`.
 
-## 2026-06-22 17:35:17 -04:00
-
-### Complex-Plan Timeout Bug Fixed
+## Complex-Plan Timeout Bug Fixed
 
 - Investigated reports that prompts such as `make a rubiks cube` failed before receiving an OpenAI
   response from Blender.
@@ -511,9 +459,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   returned in 40.14 seconds using 5,745 tokens under the new 180-second timeout.
 - Built `dist/blender_ai_assistant-0.1.4.zip` as a 539,666-byte self-contained package.
 
-## 2026-06-22 17:36:25 -04:00
-
-### Timeout Fix Released
+## Timeout Fix Released
 
 - Pushed timeout-fix commit `62e281c` to `main` and created annotated tag `v0.1.4` at that verified
   commit.
@@ -522,9 +468,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified the 539,666-byte GitHub asset matches the local SHA-256 digest
   `266a6a20b3cecaafab5af0b8efec10db12cd8418a40acea43a74ddd3641be21a`.
 
-## 2026-06-24 17:20:20 -04:00
-
-### Operation Contract Expanded
+## Operation Contract Expanded
 
 - Added controlled operations for material property updates, collection creation, light property
   updates, camera property updates, safe modifier creation, modifier property updates, text object
@@ -538,9 +482,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   Blender integration, controlled execution, sample scene checks, manifest/archive validation,
   package verification, isolated archive install, and installed extension integration checks.
 
-## 2026-06-24 20:30:25 -04:00
-
-### High-Risk Asset And Mesh Operations Added
+## High-Risk Asset And Mesh Operations Added
 
 - Added controlled high-risk operations for local asset import, local blend data link/append,
   non-applied Boolean modifiers, mesh joining, and mesh separation.
@@ -555,9 +497,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   controlled execution, sample scene checks, manifest/archive validation, package verification,
   isolated archive install, and installed extension integration checks.
 
-## 2026-06-24 21:30:56 -04:00
-
-### HTTPS Asset Import Added
+## HTTPS Asset Import Added
 
 - Extended `IMPORT_ASSET` so asset sources can be either local paths or HTTPS URLs for `.obj`,
   `.fbx`, `.gltf`, and `.glb` files.
@@ -567,9 +507,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Updated provider instructions, controlled-operation documentation, and operation-contract tests
   for the HTTPS import behavior.
 
-## 2026-06-24 22:05:30 -04:00
-
-### URL Import Schema Compatibility Fixed
+## URL Import Schema Compatibility Fixed
 
 - Fixed OpenAI Structured Outputs rejecting URL import plans with `Invalid JSON schema: regex
   lookaround is not supported`.
@@ -580,9 +518,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   controlled execution, sample scene checks, manifest/archive validation, package verification,
   isolated archive install, and installed extension integration checks.
 
-## 2026-06-25 13:30:14 -04:00
-
-### NVIDIA Provider Added
+## NVIDIA Provider Added
 
 - Added a selectable NVIDIA NIM provider alongside OpenAI.
 - Implemented direct HTTPS chat-completions support through `requests` using the hosted
@@ -599,9 +535,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   extension integration checks.
 - Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 555,519-byte package.
 
-## 2026-06-25 13:42:44 -04:00
-
-### NVIDIA Live Smoke Test Passed
+## NVIDIA Live Smoke Test Passed
 
 - Confirmed no OpenAI live test process was running after the interrupted OpenAI matrix command.
 - Ran a NVIDIA-only live smoke request using `NVIDIA_API_KEY` and the NVIDIA-hosted
@@ -618,9 +552,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   installed extension checks all passed.
 - Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 555,861-byte package.
 
-## 2026-06-25 13:59:52 -04:00
-
-### NVIDIA Local-Validation Recovery Added
+## NVIDIA Local-Validation Recovery Added
 
 - Added a one-shot NVIDIA schema repair path for parseable provider answers that fail the exact
   controlled-operation JSON contract.
@@ -636,9 +568,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   extension integration checks.
 - Rebuilt `dist/blender_ai_assistant-0.1.4.zip` as a 556,429-byte package.
 
-## 2026-06-29 02:12:10 -04:00
-
-### Texture And Sculpting Planning Started
+## Texture And Sculpting Planning Started
 
 - Added `TEXTURE_AND_SCULPTING_PLAN.md` for the next major feature expansion.
 - Split the feature into a near-term texture/shader track and a staged sculpt-like workflow track.
@@ -648,9 +578,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   destructive mesh editing.
 - Linked the new plan from `AI_BLENDER_EXTENSION_PLAN.md`.
 
-## 2026-06-29 02:16:45 -04:00
-
-### Deferred Texture And Sculpting Features Added
+## Deferred Texture And Sculpting Features Added
 
 - Added a future implementation backlog to `TEXTURE_AND_SCULPTING_PLAN.md`.
 - Captured intentionally deferred work for arbitrary shader graphs, Geometry Nodes, texture painting,
@@ -659,9 +587,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   preview rendering.
 - Documented why each item is deferred and what prerequisites should exist before implementation.
 
-## 2026-06-29 02:21:11 -04:00
-
-### Future Texture And Sculpting Tests Added
+## Future Texture And Sculpting Tests Added
 
 - Added opt-in future pytest coverage for planned texture and sculpting contract behavior.
 - Covered material presets, procedural materials, controlled shader nodes, HTTPS image textures,
@@ -673,9 +599,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   passed, Mypy passed across 63 source files, and the future Blender scaffold exits cleanly when its
   opt-in flag is not set.
 
-## 2026-06-29 02:42:35 -04:00
-
-### Texture And Sculpting Operations Implemented
+## Texture And Sculpting Operations Implemented
 
 - Added controlled-operation support for material presets, procedural materials, shader node
   creation/value/linking, image texture loading, displace/smooth/remesh modifiers, bounded region
@@ -691,9 +615,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Merged the standalone texture/sculpting plan into Phase 11A of `AI_BLENDER_EXTENSION_PLAN.md` and
   removed `TEXTURE_AND_SCULPTING_PLAN.md` to keep one source of truth.
 
-## 2026-06-29 02:53:18 -04:00
-
-### Texture And Sculpting Tests Added To General Execution Suite
+## Texture And Sculpting Tests Added To General Execution Suite
 
 - Merged texture/sculpting Blender execution coverage into `tests/run_execution_tests.py`.
 - The general controlled-execution test now covers material presets, procedural materials, image
@@ -708,9 +630,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 
 
 
-## 2026-06-29 13:51:24 -04:00
-
-### Sculpt Region Schema Fixed For OpenAI
+## Sculpt Region Schema Fixed For OpenAI
 
 - Fixed `SCULPT_SMOOTH_REGION.region` so strict structured-output providers receive every region
   property as required, with unused `material_id` and `vertex_group` values set to null.
@@ -723,9 +643,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   source files.
 - Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 564,302 bytes.
 
-## 2026-06-29 17:06:12 -04:00
-
-### Sculpt Brush Miss Rollback Fixed
+## Sculpt Brush Miss Rollback Fixed
 
 - Fixed `APPLY_SCULPT_BRUSH_STROKES` so strokes that miss all vertices inside their radius snap to
   the nearest vertex neighborhood instead of failing the operation and rolling back the entire plan.
@@ -738,9 +656,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   tests skipped, Ruff passed, and Mypy passed across 61 source files.
 - Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 565,113 bytes.
 
-## 2026-06-29 18:09:55 -04:00
-
-### Deferred Future Implementation Planning Started
+## Deferred Future Implementation Planning Started
 
 - Added `FUTURE_IMPLEMENTATION_PLAN.md` as the staged roadmap for deferred feature work.
 - Split future work into context/registry foundations, advanced shader graph editing, UV/image
@@ -751,9 +667,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Linked the new roadmap from `AI_BLENDER_EXTENSION_PLAN.md` so deferred features have one planning
   entry point before they move into the controlled-operation contract.
 
-## 2026-06-29 20:02:14 -04:00
-
-### Deferred Future Foundation Implemented
+## Deferred Future Foundation Implemented
 
 - Added shared operation registries for material families, procedural patterns, shader node types,
   socket names, UV operation names, and future mesh-processing limits.
@@ -767,9 +681,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   passed, and Blender controlled execution tests passed.
 - Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 566,586 bytes.
 
-## 2026-06-30 01:18:39 -04:00
-
-### Deferred Future Tracks B-F Implemented
+## Deferred Future Tracks B-F Implemented
 
 - Implemented controlled UV and image texture operations: image texture node creation, texture
   mapping, UV map assignment, UV map creation, deterministic unwrap, and UV packing.
@@ -785,9 +697,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
   passed across 62 source files, Blender dependency/context smoke test passed, sample scene tests
   passed, and Blender controlled execution tests passed.
 - Rebuilt and validated `dist/blender_ai_assistant-0.1.4.zip`; new archive size: 577,400 bytes.
-## 2026-06-30 02:05:57 -04:00
-
-### ComfyUI Texture Provider Connected
+## ComfyUI Texture Provider Connected
 
 - Added a local ComfyUI provider client for server health checks, checkpoint discovery, prompt queueing, history polling, and generated image download.
 - Connected `GENERATE_TEXTURE_IMAGE` to use ComfyUI when `COMFYUI_ENABLED=true`; the existing deterministic generator remains the default fallback.
@@ -795,18 +705,14 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Verified the local ComfyUI server responds at `http://127.0.0.1:8188`; generation is blocked until a checkpoint model is installed in ComfyUI.
 - Verification: Pytest, Ruff, Mypy, Blender dependency smoke test, Blender controlled execution test, and live local ComfyUI connectivity check.
 
-## 2026-06-30 13:12:39 -04:00
-
-### Temporary ComfyUI Check Button Added
+## Temporary ComfyUI Check Button Added
 
 - Added a temporary `Check ComfyUI` button to the Blender assistant panel for local testing.
 - The button verifies that the local ComfyUI server is reachable and reports whether at least one checkpoint is available.
 - Verified the operator in Blender: ComfyUI reported ready with `v1-5-pruned-emaonly-fp16.safetensors`.
 - This is a temporary testing feature intended to be removed before pushing the code to Git.
 
-## 2026-06-30 14:28:16 -04:00
-
-### Deferred Future Tracks G-K Implemented
+## Deferred Future Tracks G-K Implemented
 
 - Implemented conservative controlled Geometry Nodes preset operations with bounded exposed-input metadata.
 - Implemented generated mesh copy variants: generic generated copies, smoothed copies, displaced copies, remeshed copies, and generated-copy replacement by hiding the original.
@@ -816,18 +722,14 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Added contract tests, a Blender future-track execution smoke test, release-check coverage, provider instructions, and documentation updates.
 - Verification: 148 pytest tests passed with 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender dependency smoke test passed, controlled execution tests passed, future-track execution tests passed, and sample scene tests passed.
 
-## 2026-06-30 15:21:48 -04:00
-
-### Deferred Future Track A Implemented
+## Deferred Future Track A Implemented
 
 - Implemented controlled shader graph editing operations for assistant-created node removal, explicit shader-link disconnect, bounded color ramp creation and updates, safe shader mix-chain templates, and material output validation/repair.
 - Updated schema validation, semantic validation, risk catalog entries, executor rollback behavior, provider instructions, controlled-operation documentation, the future implementation roadmap, and the test matrix.
 - Added Track A contract tests and a Blender shader graph execution smoke test.
 - Verification: 150 pytest tests passed with 10 live tests skipped, Ruff passed, Mypy passed across 66 source files, Blender dependency smoke test passed, controlled execution tests passed, Track A shader execution tests passed, future-track execution tests passed, and sample scene tests passed.
 
-## 2026-06-30 18:12:34 -04:00
-
-### Controlled Residual Deferred Features Implemented
+## Controlled Residual Deferred Features Implemented
 
 - Planned and implemented controlled alternatives for the remaining deferred items: shader graph templates, Geometry Nodes group templates, low-resolution render previews, mesh face-set attributes, dynamic-topology-style generated copies, explicit generated-mesh application, and rig-safe shape key updates.
 - Added schema, semantic validation, risk catalog entries, preflight simulation, executor rollback behavior, provider instructions, and documentation updates for the new residual operation family.
@@ -835,9 +737,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Fixed residual execution target resolution for render-preview camera IDs and created valid pass-through Geometry Nodes node groups.
 - Verification: release checks passed with 152 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 67 source files, all Blender smoke tests passed, archive validation passed, isolated install passed, and `dist/blender_ai_assistant-0.1.4.zip` was rebuilt at 594,244 bytes.
 
-## 2026-07-01 01:10:11 -04:00
-
-### Provider Duplication Cleanup
+## Provider Duplication Cleanup
 
 - Addressed review findings around provider-layer duplication by moving shared HTTP retry, retry-delay, request-ID extraction, JSON mapping validation, API error formatting, token integer normalization, and schema-plan validation helpers into `extension/providers/_shared.py`.
 - Refactored OpenAI and NVIDIA providers to use the shared helpers while preserving provider-specific payloads, response text extraction, token usage mapping, and NVIDIA's one-repair validation flow.
@@ -845,9 +745,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Updated release-package verification to require the new shared provider helper.
 - Verification: release checks passed with 152 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 68 source files, all Blender smoke tests passed, archive validation passed, isolated install passed, and `dist/blender_ai_assistant-0.1.4.zip` was rebuilt at 595,167 bytes.
 
-## 2026-07-01 02:21:32 -04:00
-
-### Future Plan And Smoke Test Consolidation
+## Future Plan And Smoke Test Consolidation
 
 - Deleted `FUTURE_IMPLEMENTATION_PLAN.md` now that the future-track implementation planning has been merged back into the main project plan.
 - Folded the shader Track A, future Tracks G-K, and residual deferred-feature Blender smoke scenarios into `tests/run_execution_tests.py`.
@@ -859,9 +757,7 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 
 
 
-## 2026-07-01 23:55:49 -04:00
-
-### OpenAI Image Generation Integrated
+## OpenAI Image Generation Integrated
 
 - Removed the active ComfyUI provider path, temporary ComfyUI test button, ComfyUI provider test, and ComfyUI release-package requirement.
 - Added an opt-in OpenAI image-generation provider for `GENERATE_TEXTURE_IMAGE` using `POST /v1/images/generations`, `OPENAI_API_KEY`, `gpt-image-2` by default, PNG output, and base64 image decoding.
@@ -869,3 +765,143 @@ All timestamps use the `America/Toronto` timezone. Add new entries in chronologi
 - Updated provider documentation, development setup, controlled-operation docs, planner instructions, tests, and release-package verification for the OpenAI Images path.
 - Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,170 bytes.
 - Verification: full release checks passed with 155 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.
+
+## General Generated Image Operations Added
+
+- Added `GENERATE_IMAGE_ASSET` for standalone generated image datablocks using the existing optional OpenAI Images provider or deterministic local fallback.
+- Added `APPLY_IMAGE_TO_MATERIAL` for applying any image result to a controlled material texture node with projection, extension, and optional UV map controls.
+- Updated schema validation, result-reference typing, preflight simulation, executor routing, risk catalog entries, provider instructions, controlled-operation docs, the main plan, and the test matrix.
+- Extended contract tests and Blender controlled execution coverage to generate a standalone image asset and apply it to a material.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,571 bytes.
+- Verification: full release checks passed with 155 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.
+
+## OpenAI Image Generation Default Enabled
+
+- Changed `OPENAI_IMAGE_GENERATION_ENABLED` so generated image operations use OpenAI Images by default when no explicit setting is present.
+- Kept the explicit local fallback switch: setting `OPENAI_IMAGE_GENERATION_ENABLED=false` disables billable image calls and uses deterministic local pattern generation.
+- Updated the OpenAI image provider test, development setup docs, provider integration docs, controlled-operation docs, provider instructions, and main plan wording for the new default.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,568 bytes.
+- Verification: full release checks passed with 155 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.
+
+## OpenAI Image Session Key Fallback
+
+- Updated generated image execution so OpenAI Images resolves `OPENAI_API_KEY` first, then falls back to Blender's masked session key when OpenAI is the selected provider.
+- Added an explicit OpenAI image provider API-key override and focused tests for session-key fallback behavior.
+- Updated provider integration, development setup, installation, controlled-operation, and main-plan docs to describe the shared key lookup.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,816 bytes.
+- Verification: full release checks passed with 158 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.
+
+## Large Plan Capacity Increased
+
+- Raised default and hard controlled-operation limits to 1,000 operations per plan, 1,000 targets per operation, and 10,000 duplicate outputs.
+- Raised OpenAI and NVIDIA planning output-token defaults to 65,536 tokens and the Blender preference ceiling to 131,072 tokens.
+- Updated the UI fallback path, operation contract docs, safety docs, UX docs, troubleshooting docs, provider docs, and operation-contract tests for the new capacity limits.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,841 bytes.
+- Verification: full release checks passed with 158 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.
+
+## Output Token Default Reduced
+
+- Reduced the default OpenAI and NVIDIA planning output-token request from 65,536 to 32,768 tokens to avoid provider-side HTTP 500 failures on ordinary prompts.
+- Kept the Blender preference ceiling at 131,072 tokens for intentional large-plan testing.
+- Added troubleshooting guidance for OpenAI HTTP 500 responses after oversized structured planning requests.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 594,841 bytes.
+- Verification: full release checks passed with 158 pytest tests passed and 10 live tests skipped, Ruff passed, Mypy passed across 65 source files, Blender integration tests passed, controlled execution tests passed, sample scene tests passed, archive validation passed, archive content verification passed, isolated archive install passed, and installed extension integration passed.
+
+## Sculpting Expansion Planning Started
+
+- Added `SCULPTING_FEATURE_PLAN.md` to plan expanded sculpt brush types, symmetry, mask operations, face-set tools, voxel/remesh generated-copy workflows, advanced multires workflows, and sculpt variant preview/review.
+- Linked the focused sculpting plan from the deferred implementation section of `AI_BLENDER_EXTENSION_PLAN.md`.
+- Kept this as documentation-only planning; no operation code, schemas, executor behavior, tests, or release package were changed.
+
+## Sculpting Expansion Test Scaffolding Added
+
+- Added expected-failure TDD contract tests for sculpting Tracks A-G in `tests/unit/test_sculpting_future_contract.py`.
+- Covered planned payloads for expanded brushes, symmetric strokes, mask operations, face-set tools, voxel/remesh generated-copy workflows, multires workflows, sculpt variant review, and future provider instructions.
+- Documented the test scaffolding in `SCULPTING_FEATURE_PLAN.md` and added it to `TEST_MATRIX.md`.
+- Kept the tests marked `xfail(strict=True)` so the current suite remains green until the main operation code is implemented.
+- Verification: focused sculpting future tests reported 34 expected failures; full Python test suite passed with 158 passed, 10 skipped, and 34 expected failures. Ruff and Mypy passed for the new test file.
+
+## Sculpt Mask Operations Implemented
+
+- Implemented Track C sculpt mask operations: `INVERT_SCULPT_MASK`, `CLEAR_SCULPT_MASK`, `BLUR_SCULPT_MASK`, `SHARPEN_SCULPT_MASK`, `GROW_SCULPT_MASK`, `SHRINK_SCULPT_MASK`, and `COMBINE_SCULPT_MASKS`.
+- Added schema, catalog, result-kind validation, semantic combine-mask validation, preflight simulation, executor routing, vertex-group weight editing, and rollback helpers.
+- Promoted Track C tests from expected-failure to active validation while leaving the remaining future sculpting tracks expected-failure.
+- Extended the controlled Blender execution test to mutate, combine, and clear sculpt masks on a temporary scene.
+- Updated provider instructions, the controlled-operation contract, test matrix, main extension plan, and sculpting plan for the implemented mask operations.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 597,272 bytes.
+- Verification: full release gate passed dependency check, Python tests with 166 passed, 10 skipped, and 27 expected failures, Ruff, Mypy across 66 source files, Blender integration tests, controlled execution tests, sample scene tests, source validation, extension build, archive validation, and archive content verification. The scripted isolated install step failed with a Windows `WinError 5` rename inside the OneDrive-hosted temporary profile, then the same archive passed manual isolated install and installed-extension integration from a temp profile outside OneDrive.
+
+## Sculpting Plan Merged and Shading Planning Started
+
+- Merged the focused sculpting expansion roadmap into `AI_BLENDER_EXTENSION_PLAN.md` as Phase 11B.
+- Removed the standalone `SCULPTING_FEATURE_PLAN.md` file so the main extension plan is the active roadmap source.
+- Added Phase 11C to `AI_BLENDER_EXTENSION_PLAN.md` for advanced shading feature planning, covering shader compatibility registries, layered materials, procedural pattern expansion, reference-based material matching, specialized material families, cleanup/repair, and material variant review.
+- Updated `TEST_MATRIX.md` so the planned sculpting expansion row points to the main plan for roadmap context.
+- Kept this as documentation-only planning; no operation code, schemas, executor behavior, tests, or release package were changed.
+
+## Advanced Shading Test Scaffolding Added
+
+- Added expected-failure TDD contract tests for shading Tracks A-G in `tests/unit/test_shading_future_contract.py`.
+- Covered planned payloads for shader compatibility registry metadata, layered material workflows, procedural pattern expansion, reference-based material matching, specialized material families, shader cleanup/repair, material variants, and future provider instructions.
+- Updated `TEST_MATRIX.md` to list the planned advanced shading expansion test scaffold.
+- Kept the tests marked `xfail(strict=True)` so the current suite remains green until the main shading operation code is implemented.
+- Verification: focused advanced shading future tests reported 42 expected failures; Ruff passed for the new test file; full Python test suite passed with 166 passed, 10 skipped, and 69 expected failures.
+
+## Advanced Shading Registry Implemented
+
+- Implemented the Phase 11C Track A shader compatibility foundation in `extension/operations/registries.py`.
+- Added shader socket families, socket-family compatibility rules, and node metadata for the existing allowlisted shader nodes plus built-in Principled BSDF and Material Output references.
+- Added local semantic validation for `CONNECT_SHADER_NODES` and `DISCONNECT_SHADER_LINK` so incompatible socket-family pairings reject before execution.
+- Added `BSDF` and `Emission` shader sockets to the controlled socket allowlist for valid shader-to-surface graph connections.
+- Promoted the Track A shading future test from expected-failure to active validation while leaving the remaining shading tracks expected-failure.
+- Updated `AI_BLENDER_EXTENSION_PLAN.md` and `TEST_MATRIX.md` for the implemented registry and compatibility validation coverage.
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip`; archive verification passed at 598,063 bytes.
+- Verification: focused shading and operation-contract tests passed with 82 passed and 41 expected failures; Ruff passed for touched files; Mypy passed across 67 source files; full Python test suite passed with 170 passed, 10 skipped, and 68 expected failures; Blender controlled execution tests passed; source validation, archive validation, and archive content verification passed.
+
+## Advanced Shading Tracks B-G Implemented
+
+- Implemented layered shader materials, shader layers, layer masks, layer reordering, and layer removal.
+- Implemented procedural shading node-set templates for expanded patterns, edge wear, triplanar-style mapping, object-space gradients, and curvature-style masks.
+- Implemented reference-image material palette metadata, reference material creation, material matching, and lookdev preview images.
+- Implemented specialized material families for glass, translucent, emission, volume, toon, and anisotropic looks.
+- Implemented assistant-owned shader cleanup, duplicate material consolidation, node layout normalization, shader compatibility validation, and broken-link repair.
+- Implemented material variant creation, tagging, comparison preview, explicit acceptance, and rejection metadata.
+- Updated operation enums, catalog entries, JSON schemas, semantic validation, result-reference handling, target resolution, provider instructions, executor routing, rollback helpers, `AI_BLENDER_EXTENSION_PLAN.md`, `CONTROLLED_OPERATIONS.md`, and `TEST_MATRIX.md`.
+- Promoted `tests/unit/test_shading_future_contract.py` Tracks B-G from expected-failure placeholders to active validation.
+- Added an advanced shading scenario to `tests/run_execution_tests.py`; the current shell could not execute it because no Blender executable was available through `BLENDER_EXE`, `PATH`, or common install paths.
+- Verification: focused shading and operation-contract tests passed with 124 passed; Ruff passed for touched source and tests; Mypy passed across 45 source files; full Python test suite passed with 212 passed, 10 skipped, and 27 expected failures.
+
+## Advanced UV Editing Planning Started
+
+- Added Phase 11D to `AI_BLENDER_EXTENSION_PLAN.md` for advanced UV editing.
+- Planned UV tracks for diagnostics, seam/island definition, unwrap/projection expansion, island transforms, texel density/advanced packing/UDIM layout, cleanup/repair, texture-aware UV workflows, and UV variants/review.
+- Captured UV-specific safety rules, provider instruction updates, future scene context additions, implementation order, and acceptance criteria.
+- Kept this as documentation-only planning; no operation code, schemas, executor behavior, tests, or release package were changed.
+
+## Advanced UV Editing Test Scaffolding Added
+
+- Added strict expected-failure TDD contract tests for UV Tracks A-H in `tests/unit/test_uv_future_contract.py`.
+- Covered planned payloads for UV diagnostics, seam/island definition, projection unwraps, island transforms, texel density and UDIM workflows, cleanup/repair, texture-aware UV workflows, UV variants, and future provider instructions.
+- Updated `AI_BLENDER_EXTENSION_PLAN.md` and `TEST_MATRIX.md` to reference the new UV test scaffold.
+- Kept the tests marked `xfail(strict=True)` so the current suite remains green until the main UV operation code is implemented.
+- Verification: focused advanced UV future tests reported 43 expected failures; Ruff passed for the new test file; full Python test suite passed with 212 passed, 10 skipped, and 70 expected failures.
+
+## Advanced UV Editing Tracks A-H Implemented
+
+- Implemented UV diagnostics, reports, overlap/stretch previews, seam marking, seam clearing, island creation, projection unwraps, island transforms, pinning, texel-density adjustment, advanced packing, UDIM layout, UV cleanup/repair, texture-atlas metadata, UV guide images, grid test material creation, UV variants, and UV comparison/accept/reject workflows.
+- Added operation enum values, catalog entries, registry constants, strict JSON schemas, result-kind validation, semantic UV bounds/merge checks, target resolution for nested atlas materials, provider instructions, preflight simulation, executor routing, and rollback helpers.
+- Promoted `tests/unit/test_uv_future_contract.py` from strict expected-failure scaffolding to active validation.
+- Added advanced UV Tracks A-H coverage to the general Blender execution test in `tests/run_execution_tests.py`.
+- Updated `AI_BLENDER_EXTENSION_PLAN.md`, `CONTROLLED_OPERATIONS.md`, and `TEST_MATRIX.md` for the implemented UV operation set.
+- Verification: focused UV contract tests passed with 43 passed; operation-contract plus UV tests passed with 124 passed; full Python test suite passed with 255 passed, 10 skipped, and 27 expected failures; Ruff and Mypy passed; Blender controlled execution tests passed on Blender 5.1.0.
+
+## Release ZIP Rebuilt
+
+- Rebuilt `dist/blender_ai_assistant-0.1.4.zip` from the current extension source after the advanced UV implementation.
+- Verification: Blender archive validation passed; independent archive content verification passed at 627,873 bytes.
+
+## Version 1.5.0 Release Prepared
+
+- Updated the Blender extension manifest, installation docs, troubleshooting docs, development release commands, release-check script, and archive verifier for version 1.5.0.
+- Rebuilt `dist/blender_ai_assistant-1.5.0.zip` from the current extension source.
+- Verification: full Python test suite passed with 255 passed, 10 skipped, and 27 expected failures; Ruff passed; Mypy passed across 45 source files; Blender controlled execution tests passed; Blender archive validation passed; independent archive verification passed at 627,869 bytes.

@@ -117,6 +117,7 @@ class OpenAIImageProvider:
     def from_environment(
         cls,
         *,
+        api_key: str | None = None,
         timeout_seconds: float = DEFAULT_OPENAI_IMAGE_TIMEOUT_SECONDS,
         session: Any | None = None,
     ) -> "OpenAIImageProvider":
@@ -124,8 +125,11 @@ class OpenAIImageProvider:
             "OPENAI_IMAGE_TIMEOUT",
             timeout_seconds,
         )
+        resolved_api_key = (
+            resolve_environment_value("OPENAI_API_KEY") if api_key is None else api_key
+        )
         return cls(
-            resolve_environment_value("OPENAI_API_KEY"),
+            resolved_api_key,
             model=resolve_environment_value("OPENAI_IMAGE_MODEL")
             or DEFAULT_OPENAI_IMAGE_MODEL,
             quality=resolve_environment_value("OPENAI_IMAGE_QUALITY")
@@ -202,7 +206,7 @@ class OpenAIImageProvider:
         return request_id_from_headers(response, ("x-request-id", "X-Request-Id"))
 
 
-def openai_image_generation_enabled(default: bool = False) -> bool:
+def openai_image_generation_enabled(default: bool = True) -> bool:
     value = resolve_environment_value("OPENAI_IMAGE_GENERATION_ENABLED").strip().lower()
     if not value:
         return default

@@ -46,6 +46,13 @@ def ready_plan(snapshot_id: str, operations: list[dict[str, Any]]) -> Any:
     )
 
 
+def vertex_group_weight(group: Any, vertex_index: int) -> float:
+    try:
+        return float(group.weight(vertex_index))
+    except RuntimeError:
+        return 0.0
+
+
 scene = cast(Any, bpy.context.scene)
 data: Any = cast(Any, bpy.data)
 asset_dir = PROJECT_ROOT / "build" / "execution_assets"
@@ -394,6 +401,16 @@ plan = ready_plan(
             "pack": True,
         },
         {
+            "operation_id": "generate_image_asset",
+            "type": "GENERATE_IMAGE_ASSET",
+            "prompt": "execution test standalone image asset",
+            "image_name": "ExecGeneratedImageAsset",
+            "width": 8,
+            "height": 8,
+            "color_space": "sRGB",
+            "pack": True,
+        },
+        {
             "operation_id": "save_generated_texture",
             "type": "SAVE_GENERATED_TEXTURE",
             "image_id": "result:generate_texture_image",
@@ -409,6 +426,17 @@ plan = ready_plan(
             "node_label": "Exec Generated Texture",
             "connect_to": "Emission Color",
             "uv_map_name": "ExecAIUV",
+        },
+        {
+            "operation_id": "apply_image_to_material",
+            "type": "APPLY_IMAGE_TO_MATERIAL",
+            "material_id": texture_material_id,
+            "image_id": "result:generate_image_asset",
+            "node_label": "Exec Applied Image",
+            "connect_to": "Base Color",
+            "projection": "FLAT",
+            "extension": "EXTEND",
+            "uv_map_name": None,
         },
         {
             "operation_id": "create_paint_image",
@@ -709,7 +737,7 @@ plan = ready_plan(
 )
 
 result = execute_plan(bpy.context, plan, snapshot)
-assert result.completed_operations == 55
+assert result.completed_operations == 57
 assert not result.partial
 assert not result.rolled_back
 assert result.changed_count >= 8
@@ -764,6 +792,7 @@ procedural_wood = data.materials["ExecProceduralWood"]
 texture_image = data.images["ExecTextureImage"]
 normal_image = data.images["ExecNormalTexture"]
 generated_texture = data.images["ExecGeneratedTexture"]
+generated_image_asset = data.images["ExecGeneratedImageAsset"]
 paint_image = data.images["ExecPaintImage"]
 bake_target = data.images["ExecBakeTarget"]
 texture_node = texture_material.node_tree.nodes["Exec Texture Noise"]
@@ -774,6 +803,7 @@ assert bool(procedural_wood.use_nodes)
 assert texture_image.size[0] == 1
 assert normal_image.colorspace_settings.name == "Non-Color"
 assert generated_texture.size[:] == (8, 8)
+assert generated_image_asset.size[:] == (8, 8)
 assert generated_saved_path.exists()
 assert paint_image.size[:] == (8, 8)
 assert bake_target["ai_bake_pass"] == "base_color"
@@ -796,6 +826,8 @@ assert data.materials["ExecPBRMaterial"].node_tree.nodes["AI PBR base_color"].im
     "ExecPBR_base_color"
 )
 assert texture_material.node_tree.nodes["Exec Generated Texture"].image == generated_texture
+assert texture_material.node_tree.nodes["Exec Applied Image"].image == generated_image_asset
+assert texture_material.node_tree.nodes["Exec Applied Image"].extension == "EXTEND"
 assert texture_material.node_tree.nodes["Exec Paint Slot"].image == paint_image
 assert texture_material.node_tree.nodes["Exec Baked Texture"].image == bake_target
 paint_pixels = tuple(round(float(value), 4) for value in paint_image.pixels[:16])
@@ -1161,8 +1193,9 @@ def _run_future_tracks_execution() -> None:
     cube.data.materials.append(material)
     for polygon in cube.data.polygons:
         polygon.material_index = 0
+    vertex_indices = tuple(int(vertex.index) for vertex in cube.data.vertices)
     group = cube.vertex_groups.new(name="FutureRegion")
-    group.add(tuple(int(vertex.index) for vertex in cube.data.vertices), 1.0, "REPLACE")
+    group.add(vertex_indices[: max(1, len(vertex_indices) // 2)], 1.0, "REPLACE")
 
     snapshot = read_scene_context(
         bpy.context,
@@ -1252,6 +1285,63 @@ def _run_future_tracks_execution() -> None:
                 "strength": 0.8,
             },
             {
+                "operation_id": "blur_sculpt_mask",
+                "type": "BLUR_SCULPT_MASK",
+                "target_id": cube_id,
+                "mask_name": "FutureMask",
+                "iterations": 1,
+                "strength": 0.5,
+            },
+            {
+                "operation_id": "sharpen_sculpt_mask",
+                "type": "SHARPEN_SCULPT_MASK",
+                "target_id": cube_id,
+                "mask_name": "FutureMask",
+                "iterations": 1,
+                "strength": 0.5,
+            },
+            {
+                "operation_id": "grow_sculpt_mask",
+                "type": "GROW_SCULPT_MASK",
+                "target_id": cube_id,
+                "mask_name": "FutureMask",
+                "iterations": 1,
+                "strength": 0.5,
+            },
+            {
+                "operation_id": "shrink_sculpt_mask",
+                "type": "SHRINK_SCULPT_MASK",
+                "target_id": cube_id,
+                "mask_name": "FutureMask",
+                "iterations": 1,
+                "strength": 0.5,
+            },
+            {
+                "operation_id": "invert_sculpt_mask",
+                "type": "INVERT_SCULPT_MASK",
+                "target_id": cube_id,
+                "mask_name": "FutureMask",
+                "iterations": 1,
+                "strength": 1.0,
+            },
+            {
+                "operation_id": "combine_sculpt_masks",
+                "type": "COMBINE_SCULPT_MASKS",
+                "target_id": cube_id,
+                "source_mask_name": "FutureRegion",
+                "target_mask_name": "FutureMask",
+                "result_mask_name": "FutureCombinedMask",
+                "combine_mode": "add",
+            },
+            {
+                "operation_id": "clear_sculpt_mask",
+                "type": "CLEAR_SCULPT_MASK",
+                "target_id": cube_id,
+                "mask_name": "FutureMask",
+                "iterations": 1,
+                "strength": 1.0,
+            },
+            {
                 "operation_id": "sculpt_apply",
                 "type": "APPLY_SCULPT_REGION_OPERATION",
                 "region_id": "result:sculpt_region_group",
@@ -1300,6 +1390,17 @@ def _run_future_tracks_execution() -> None:
     assert len(data.objects["FutureRemeshedCopy"].data.polygons) >= len(cube.data.polygons)
     assert cube.hide_viewport is True
     assert cube.vertex_groups.get("FutureMask") is not None
+    assert cube.vertex_groups.get("FutureCombinedMask") is not None
+    future_mask = cube.vertex_groups["FutureMask"]
+    combined_mask = cube.vertex_groups["FutureCombinedMask"]
+    assert all(
+        vertex_group_weight(future_mask, int(vertex.index)) == 0.0
+        for vertex in cube.data.vertices
+    )
+    assert any(
+        vertex_group_weight(combined_mask, int(vertex.index)) > 0.0
+        for vertex in cube.data.vertices
+    )
     assert cube.data.shape_keys.key_blocks.get("Future Shape") is not None
     assert data.images["FuturePreview"]["ai_preview_kind"] == "generated_mesh"
 
@@ -1437,7 +1538,890 @@ def _run_residual_features_execution() -> None:
     assert preview["ai_preview_kind"] == "render"
 
 
+def _run_advanced_shading_execution() -> None:
+    _reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0.0, 0.0, 0.0))
+    cube = cast(Any, bpy.context.object)
+    cube.name = "AdvancedShadingSource"
+    material = data.materials.new("AdvancedShadingMaterial")
+    material.use_nodes = True
+    cube.data.materials.append(material)
+    for polygon in cube.data.polygons:
+        polygon.material_index = 0
+
+    snapshot = read_scene_context(
+        bpy.context,
+        ContextOptions(scope=ContextScope.SCENE, include_custom_properties=True),
+    )
+    cube_id = target_id(snapshot, "AdvancedShadingSource", TargetKind.OBJECT)
+    material_id = target_id(snapshot, "AdvancedShadingMaterial", TargetKind.MATERIAL)
+
+    plan = ready_plan(
+        snapshot.snapshot_id,
+        [
+            {
+                "operation_id": "layered_material",
+                "type": "CREATE_LAYERED_SHADER_MATERIAL",
+                "name": "AI Advanced Layered",
+                "base_family": "metal",
+                "base_color": [0.45, 0.24, 0.1],
+                "metallic": 0.85,
+                "roughness": 0.35,
+                "layer_stack_label": "Aged bronze",
+            },
+            {
+                "operation_id": "dust_layer",
+                "type": "ADD_SHADER_LAYER",
+                "material_id": "result:layered_material",
+                "layer_type": "dust",
+                "layer_name": "Dust",
+                "blend_mode": "mix",
+                "opacity": 0.6,
+                "color": [0.8, 0.74, 0.62],
+                "roughness_delta": 0.15,
+                "bump_strength": 0.05,
+            },
+            {
+                "operation_id": "dust_mask",
+                "type": "SET_SHADER_LAYER_MASK",
+                "material_id": "result:layered_material",
+                "layer_id": "result:dust_layer",
+                "mask_source": {
+                    "kind": "procedural",
+                    "image_id": None,
+                    "uv_map_name": None,
+                    "vertex_group": None,
+                    "pattern": "noise",
+                },
+                "invert": False,
+                "strength": 0.8,
+            },
+            {
+                "operation_id": "reorder_layers",
+                "type": "REORDER_SHADER_LAYERS",
+                "material_id": "result:layered_material",
+                "layer_order": ["result:dust_layer"],
+            },
+            {
+                "operation_id": "pattern_set",
+                "type": "CREATE_PROCEDURAL_PATTERN_NODE_SET",
+                "material_id": "result:layered_material",
+                "pattern": "ceramic_crackle",
+                "node_set_label": "AI Advanced Pattern",
+                "mapping": "object",
+                "scale": 18.0,
+                "contrast": 0.7,
+                "roughness_influence": 0.25,
+                "bump_strength": 0.08,
+                "seed": 7,
+            },
+            {
+                "operation_id": "edge_wear",
+                "type": "CREATE_EDGE_WEAR_SHADER",
+                "material_id": "result:layered_material",
+                "node_set_label": "AI Edge Wear",
+                "mapping": "object",
+                "scale": 10.0,
+                "contrast": 0.55,
+                "roughness_influence": 0.2,
+                "bump_strength": 0.05,
+                "seed": 3,
+            },
+            {
+                "operation_id": "triplanar",
+                "type": "CREATE_TRIPLANAR_MAPPING_SETUP",
+                "material_id": "result:layered_material",
+                "node_set_label": "AI Triplanar",
+                "mapping": "generated",
+                "scale": 6.0,
+                "contrast": 0.45,
+                "roughness_influence": 0.1,
+                "bump_strength": 0.04,
+                "seed": 4,
+            },
+            {
+                "operation_id": "object_gradient",
+                "type": "CREATE_OBJECT_SPACE_GRADIENT_SHADER",
+                "material_id": "result:layered_material",
+                "node_set_label": "AI Object Gradient",
+                "mapping": "object",
+                "scale": 4.0,
+                "contrast": 0.5,
+                "roughness_influence": 0.1,
+                "bump_strength": 0.0,
+                "seed": 5,
+            },
+            {
+                "operation_id": "curvature_mask",
+                "type": "CREATE_CURVATURE_STYLE_MASK",
+                "material_id": "result:layered_material",
+                "node_set_label": "AI Curvature Mask",
+                "mapping": "object",
+                "scale": 24.0,
+                "contrast": 0.8,
+                "roughness_influence": 0.15,
+                "bump_strength": 0.02,
+                "seed": 6,
+            },
+            {
+                "operation_id": "extract_palette",
+                "type": "EXTRACT_MATERIAL_PALETTE_FROM_IMAGE",
+                "source": "https://example.com/reference-material.png",
+                "palette_name": "AI Reference Palette",
+                "max_colors": 4,
+                "include_roughness_guess": True,
+                "include_metallic_guess": True,
+                "include_pattern_hints": True,
+            },
+            {
+                "operation_id": "reference_material",
+                "type": "CREATE_MATERIAL_FROM_REFERENCE_IMAGE",
+                "source": "https://example.com/reference-material.png",
+                "material_name": "AI Reference Material",
+                "palette_id": "result:extract_palette",
+                "template_family": "matte_plastic",
+                "use_generated_texture": True,
+            },
+            {
+                "operation_id": "match_reference",
+                "type": "MATCH_MATERIAL_TO_REFERENCE",
+                "material_id": "result:reference_material",
+                "reference_source": "https://example.com/reference-material.png",
+                "match_color": True,
+                "match_roughness": True,
+                "match_pattern": True,
+                "strength": 0.75,
+            },
+            {
+                "operation_id": "lookdev_preview",
+                "type": "CREATE_LOOKDEV_PREVIEW",
+                "material_id": "result:reference_material",
+                "target_id": cube_id,
+                "preview_name": "AI Lookdev Preview",
+                "width": 64,
+                "height": 64,
+                "pack": True,
+            },
+            {
+                "operation_id": "glass",
+                "type": "CREATE_GLASS_MATERIAL",
+                "name": "AI Glass Material",
+                "base_color": [0.35, 0.55, 0.8],
+                "alpha": 0.55,
+                "roughness": 0.1,
+                "ior": 1.45,
+                "transmission": 0.7,
+                "emission_strength": 0.0,
+                "density": 0.1,
+                "anisotropy": 0.0,
+                "template_strength": 0.8,
+            },
+            {
+                "operation_id": "translucent",
+                "type": "CREATE_TRANSLUCENT_MATERIAL",
+                "name": "AI Translucent Material",
+                "base_color": [0.6, 0.4, 0.8],
+                "alpha": 0.65,
+                "roughness": 0.35,
+                "ior": 1.3,
+                "transmission": 0.3,
+                "emission_strength": 0.0,
+                "density": 0.05,
+                "anisotropy": 0.0,
+                "template_strength": 0.5,
+            },
+            {
+                "operation_id": "emission",
+                "type": "CREATE_EMISSION_MATERIAL",
+                "name": "AI Emission Material",
+                "base_color": [1.0, 0.4, 0.1],
+                "alpha": 1.0,
+                "roughness": 0.2,
+                "ior": 1.0,
+                "transmission": 0.0,
+                "emission_strength": 2.0,
+                "density": 0.0,
+                "anisotropy": 0.0,
+                "template_strength": 1.0,
+            },
+            {
+                "operation_id": "volume",
+                "type": "CREATE_VOLUME_MATERIAL",
+                "name": "AI Volume Material",
+                "base_color": [0.2, 0.45, 0.7],
+                "alpha": 0.4,
+                "roughness": 0.6,
+                "ior": 1.0,
+                "transmission": 0.0,
+                "emission_strength": 0.0,
+                "density": 0.15,
+                "anisotropy": 0.0,
+                "template_strength": 0.5,
+            },
+            {
+                "operation_id": "toon",
+                "type": "CREATE_TOON_SHADER_MATERIAL",
+                "name": "AI Toon Material",
+                "base_color": [0.9, 0.75, 0.2],
+                "alpha": 1.0,
+                "roughness": 0.4,
+                "ior": 1.0,
+                "transmission": 0.0,
+                "emission_strength": 0.0,
+                "density": 0.0,
+                "anisotropy": 0.0,
+                "template_strength": 0.6,
+            },
+            {
+                "operation_id": "anisotropic",
+                "type": "CREATE_ANISOTROPIC_MATERIAL",
+                "name": "AI Anisotropic Material",
+                "base_color": [0.5, 0.5, 0.55],
+                "alpha": 1.0,
+                "roughness": 0.18,
+                "ior": 1.0,
+                "transmission": 0.0,
+                "emission_strength": 0.0,
+                "density": 0.0,
+                "anisotropy": 0.7,
+                "template_strength": 0.85,
+            },
+            {
+                "operation_id": "cleanup_unused",
+                "type": "REMOVE_UNUSED_ASSISTANT_SHADER_NODES",
+                "material_id": "result:layered_material",
+                "assistant_owned_only": True,
+                "repair_mode": "single_safe_fix",
+                "layout_style": "compact",
+            },
+            {
+                "operation_id": "normalize_layout",
+                "type": "NORMALIZE_SHADER_NODE_LAYOUT",
+                "material_id": "result:layered_material",
+                "assistant_owned_only": True,
+                "repair_mode": "single_safe_fix",
+                "layout_style": "compact",
+            },
+            {
+                "operation_id": "validate_compat",
+                "type": "VALIDATE_SHADER_COMPATIBILITY",
+                "material_id": "result:layered_material",
+                "assistant_owned_only": True,
+                "repair_mode": "single_safe_fix",
+                "layout_style": "compact",
+            },
+            {
+                "operation_id": "repair_links",
+                "type": "REPAIR_BROKEN_SHADER_LINKS",
+                "material_id": "result:layered_material",
+                "assistant_owned_only": True,
+                "repair_mode": "single_safe_fix",
+                "layout_style": "compact",
+            },
+            {
+                "operation_id": "consolidate_materials",
+                "type": "CONSOLIDATE_DUPLICATE_ASSISTANT_MATERIALS",
+                "material_ids": ["result:glass", "result:translucent"],
+                "canonical_material_id": "result:glass",
+                "target_ids": [cube_id],
+                "assistant_owned_only": True,
+            },
+            {
+                "operation_id": "material_variant",
+                "type": "CREATE_MATERIAL_VARIANT",
+                "source_material_id": material_id,
+                "variant_name": "AI Warmer Variant",
+                "variant_label": "Warmer test variant",
+                "copy_textures": True,
+            },
+            {
+                "operation_id": "tag_variant",
+                "type": "TAG_MATERIAL_VARIANT",
+                "variant_id": "result:material_variant",
+                "label": "Review Candidate",
+                "prompt_summary": "Warmer material test.",
+            },
+            {
+                "operation_id": "variant_preview",
+                "type": "CREATE_SHADER_COMPARISON_PREVIEW",
+                "target_id": cube_id,
+                "source_material_id": material_id,
+                "variant_id": "result:material_variant",
+                "preview_name": "AI Variant Preview",
+                "width": 64,
+                "height": 64,
+                "mode": "material",
+                "pack": True,
+            },
+            {
+                "operation_id": "accept_variant",
+                "type": "ACCEPT_MATERIAL_VARIANT",
+                "variant_id": "result:material_variant",
+                "target_ids": [cube_id],
+                "replace_material_id": material_id,
+            },
+            {
+                "operation_id": "reject_variant",
+                "type": "REJECT_MATERIAL_VARIANT",
+                "variant_id": "result:material_variant",
+            },
+            {
+                "operation_id": "remove_layer",
+                "type": "REMOVE_SHADER_LAYER",
+                "material_id": "result:layered_material",
+                "layer_id": "result:dust_layer",
+            },
+        ],
+    )
+    result = execute_plan(bpy.context, plan, snapshot)
+
+    assert result.completed_operations == len(plan.operations)
+    assert data.materials["AI Advanced Layered"]["ai_layer_stack_label"] == "Aged bronze"
+    assert data.materials["AI Reference Material"]["ai_reference_template_family"] == (
+        "matte_plastic"
+    )
+    assert data.materials["AI Glass Material"]["ai_specialized_material"] == (
+        "CREATE_GLASS_MATERIAL"
+    )
+    assert data.materials["AI Warmer Variant"]["ai_variant_rejected"] is True
+    assert cube.data.materials[0].name == "AI Warmer Variant"
+    assert data.images["AI Lookdev Preview"]["ai_preview_kind"] == "lookdev"
+    assert data.images["AI Variant Preview"]["ai_preview_kind"] == "shader_comparison"
+    assert data.texts["AI Reference Palette"]["ai_material_palette"] is True
+
+
+def _run_advanced_uv_execution() -> None:
+    mesh = data.meshes.new("ExecUVMesh")
+    mesh.from_pydata(
+        [
+            (-1.0, -1.0, 0.0),
+            (1.0, -1.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (-1.0, 1.0, 0.0),
+            (-1.0, -1.0, 1.0),
+            (1.0, -1.0, 1.0),
+            (1.0, 1.0, 1.0),
+            (-1.0, 1.0, 1.0),
+        ],
+        [],
+        [
+            (0, 1, 2, 3),
+            (4, 7, 6, 5),
+            (0, 4, 5, 1),
+            (1, 5, 6, 2),
+            (2, 6, 7, 3),
+            (3, 7, 4, 0),
+        ],
+    )
+    mesh.update()
+    uv_target = data.objects.new("ExecUVTarget", mesh)
+    scene.collection.objects.link(uv_target)
+    uv_material = data.materials.new("ExecUVMaterial")
+    mesh.materials.append(uv_material)
+    for polygon in mesh.polygons:
+        polygon.material_index = 0
+    for uv_name, offset in (
+        ("UVMap", 0.0),
+        ("UVMap_Copy", 0.05),
+        ("UVMap_Backup", 0.1),
+        ("AI_Unused", 0.15),
+    ):
+        uv_layer = mesh.uv_layers.new(name=uv_name)
+        for index, loop in enumerate(uv_layer.data):
+            loop.uv = ((index % 4) / 4.0 + offset, ((index // 4) % 4) / 4.0 + offset)
+    mesh.uv_layers.active = mesh.uv_layers["UVMap"]
+    mesh.uv_layers["UVMap"].active_render = True
+
+    camera_data = data.cameras.new("ExecUVCameraData")
+    uv_camera = data.objects.new("ExecUVCamera", camera_data)
+    scene.collection.objects.link(uv_camera)
+
+    snapshot = read_scene_context(
+        bpy.context,
+        ContextOptions(
+            scope=ContextScope.SCENE,
+            detailed_object_budget=80,
+            summary_object_budget=80,
+            material_budget=80,
+            collection_budget=80,
+        ),
+    )
+    uv_target_id = target_id(snapshot, "ExecUVTarget", TargetKind.OBJECT)
+    uv_material_id = target_id(snapshot, "ExecUVMaterial", TargetKind.MATERIAL)
+    uv_camera_id = target_id(snapshot, "ExecUVCamera", TargetKind.OBJECT)
+
+    plan = ready_plan(
+        snapshot.snapshot_id,
+        [
+            {
+                "operation_id": "uv_inspect",
+                "type": "INSPECT_UV_MAP",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "include_island_estimate": True,
+                "include_material_usage": True,
+            },
+            {
+                "operation_id": "uv_diagnostic",
+                "type": "CREATE_UV_DIAGNOSTIC_REPORT",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "report_name": "AI UV Diagnostic",
+                "checks": {
+                    "missing_uvs": True,
+                    "out_of_bounds": True,
+                    "overlaps": True,
+                    "stretch": True,
+                    "material_usage": True,
+                },
+            },
+            {
+                "operation_id": "uv_overlap_preview",
+                "type": "CREATE_UV_OVERLAP_PREVIEW",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "preview_name": "AI UV Overlap Preview",
+                "width": 64,
+                "height": 64,
+                "pack": True,
+            },
+            {
+                "operation_id": "uv_stretch_preview",
+                "type": "CREATE_UV_STRETCH_PREVIEW",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "preview_name": "AI UV Stretch Preview",
+                "width": 64,
+                "height": 64,
+                "pack": True,
+            },
+            {
+                "operation_id": "angle_seams",
+                "type": "MARK_UV_SEAMS_BY_ANGLE",
+                "target_ids": [uv_target_id],
+                "seam_set_name": "AI Angle Seams",
+                "angle_threshold_degrees": 45.0,
+                "mark_sharp_edges": True,
+                "assistant_owned_only": True,
+            },
+            {
+                "operation_id": "material_seams",
+                "type": "MARK_UV_SEAMS_BY_MATERIAL",
+                "target_ids": [uv_target_id],
+                "material_id": uv_material_id,
+                "seam_set_name": "AI Material Seams",
+                "assistant_owned_only": True,
+            },
+            {
+                "operation_id": "edge_set_seams",
+                "type": "MARK_UV_SEAMS_BY_EDGE_SET",
+                "target_id": uv_target_id,
+                "edge_set_name": "HardSurfaceEdges",
+                "seam_set_name": "AI Edge Set Seams",
+                "assistant_owned_only": True,
+            },
+            {
+                "operation_id": "clear_seams",
+                "type": "CLEAR_UV_SEAMS",
+                "target_ids": [uv_target_id],
+                "seam_set_name": "AI Angle Seams",
+                "assistant_owned_only": True,
+            },
+            {
+                "operation_id": "create_islands",
+                "type": "CREATE_UV_ISLANDS_FROM_SEAMS",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Islands",
+                "seam_set_id": "result:angle_seams",
+                "create_if_missing": True,
+                "overwrite_existing": False,
+            },
+            {
+                "operation_id": "smart_project",
+                "type": "SMART_PROJECT_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Projection",
+                "create_if_missing": True,
+                "overwrite_existing": False,
+                "margin": 0.02,
+                "scale_to_bounds": True,
+                "angle_limit_degrees": 66.0,
+                "area_weight": 0.5,
+                "correct_aspect": True,
+            },
+            {
+                "operation_id": "cube_project",
+                "type": "CUBE_PROJECT_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Projection",
+                "create_if_missing": True,
+                "overwrite_existing": True,
+                "margin": 0.02,
+                "scale_to_bounds": True,
+                "cube_size": 1.0,
+            },
+            {
+                "operation_id": "cylinder_project",
+                "type": "CYLINDER_PROJECT_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Projection",
+                "create_if_missing": True,
+                "overwrite_existing": True,
+                "margin": 0.02,
+                "scale_to_bounds": True,
+                "axis": "z",
+                "radius": 1.0,
+                "height": 2.0,
+                "seam_position_degrees": 180.0,
+            },
+            {
+                "operation_id": "sphere_project",
+                "type": "SPHERE_PROJECT_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Projection",
+                "create_if_missing": True,
+                "overwrite_existing": True,
+                "margin": 0.02,
+                "scale_to_bounds": True,
+                "axis": "z",
+                "pole_axis": "y",
+            },
+            {
+                "operation_id": "camera_project",
+                "type": "CAMERA_PROJECT_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Projection",
+                "create_if_missing": True,
+                "overwrite_existing": True,
+                "margin": 0.02,
+                "scale_to_bounds": True,
+                "camera_id": uv_camera_id,
+            },
+            {
+                "operation_id": "lightmap_unwrap",
+                "type": "LIGHTMAP_UNWRAP_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_Lightmap",
+                "create_if_missing": True,
+                "overwrite_existing": False,
+                "margin": 0.02,
+                "scale_to_bounds": True,
+                "resolution": 1024,
+                "pack": True,
+                "new_uv_map_by_default": True,
+            },
+            {
+                "operation_id": "select_islands",
+                "type": "SELECT_UV_ISLANDS_BY_MATERIAL",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "material_id": uv_material_id,
+                "island_set_name": "AI Material Islands",
+            },
+            {
+                "operation_id": "transform_islands",
+                "type": "TRANSFORM_UV_ISLANDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "translation": [0.1, 0.0],
+                "rotation_degrees": 15.0,
+                "scale": [1.1, 1.1],
+                "pivot": [0.5, 0.5],
+            },
+            {
+                "operation_id": "align_islands",
+                "type": "ALIGN_UV_ISLANDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "mode": "center",
+                "bounds_min": [0.0, 0.0],
+                "bounds_max": [1.0, 1.0],
+            },
+            {
+                "operation_id": "distribute_islands",
+                "type": "DISTRIBUTE_UV_ISLANDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "axis": "horizontal",
+                "spacing": 0.02,
+                "bounds_min": [0.0, 0.0],
+                "bounds_max": [1.0, 1.0],
+            },
+            {
+                "operation_id": "scale_islands",
+                "type": "SCALE_UV_ISLANDS_TO_BOUNDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "bounds_min": [0.1, 0.1],
+                "bounds_max": [0.9, 0.9],
+                "preserve_aspect": True,
+            },
+            {
+                "operation_id": "pin_islands",
+                "type": "PIN_UV_ISLANDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+            },
+            {
+                "operation_id": "unpin_islands",
+                "type": "UNPIN_UV_ISLANDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+            },
+            {
+                "operation_id": "set_texel_density",
+                "type": "SET_UV_TEXEL_DENSITY",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "texture_resolution": [2048, 2048],
+                "pixels_per_unit": 256.0,
+                "unit_scale": 1.0,
+                "island_set_id": None,
+            },
+            {
+                "operation_id": "normalize_texel_density",
+                "type": "NORMALIZE_UV_TEXEL_DENSITY",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "texture_resolution": [2048, 2048],
+                "target_pixels_per_unit": 256.0,
+                "preserve_pinned": True,
+            },
+            {
+                "operation_id": "advanced_pack",
+                "type": "PACK_UV_ISLANDS_ADVANCED",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "margin": 0.02,
+                "rotate": True,
+                "preserve_orientation": False,
+                "preserve_pinned": True,
+                "target_tile": [0, 0],
+            },
+            {
+                "operation_id": "move_to_tile",
+                "type": "MOVE_UV_ISLANDS_TO_TILE",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "tile_u": 1,
+                "tile_v": 0,
+            },
+            {
+                "operation_id": "udim_layout",
+                "type": "CREATE_UDIM_TILE_LAYOUT",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_UDIM",
+                "tile_count_u": 2,
+                "tile_count_v": 2,
+                "margin": 0.02,
+                "preserve_existing_tiles": True,
+            },
+            {
+                "operation_id": "validate_udim",
+                "type": "VALIDATE_UDIM_LAYOUT",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "AI_UDIM",
+                "allowed_tile_min": [0, 0],
+                "allowed_tile_max": [9, 9],
+                "check_overlaps": True,
+                "check_bounds": True,
+            },
+            {
+                "operation_id": "relax_islands",
+                "type": "RELAX_UV_ISLANDS",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "iterations": 3,
+                "strength": 0.5,
+                "preserve_pinned": True,
+            },
+            {
+                "operation_id": "minimize_stretch",
+                "type": "MINIMIZE_UV_STRETCH",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "iterations": 3,
+                "strength": 0.45,
+                "preserve_boundary": True,
+            },
+            {
+                "operation_id": "repair_bounds",
+                "type": "REPAIR_UV_BOUNDS",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "target_tile": [0, 0],
+                "scale_to_fit": True,
+                "preserve_aspect": True,
+            },
+            {
+                "operation_id": "merge_duplicate_uvs",
+                "type": "MERGE_DUPLICATE_UV_MAPS",
+                "target_ids": [uv_target_id],
+                "source_uv_map_names": ["UVMap_Copy", "UVMap_Backup"],
+                "destination_uv_map_name": "UVMap",
+                "update_texture_nodes": True,
+                "remove_sources": False,
+                "assistant_owned_only": True,
+            },
+            {
+                "operation_id": "remove_unused_assistant_uvs",
+                "type": "REMOVE_UNUSED_ASSISTANT_UV_MAPS",
+                "target_ids": [uv_target_id],
+                "assistant_owned_only": True,
+                "dry_run": False,
+            },
+            {
+                "operation_id": "validate_uv",
+                "type": "VALIDATE_UV_MAP",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "checks": {
+                    "missing_uvs": True,
+                    "out_of_bounds": True,
+                    "overlaps": True,
+                    "zero_area_islands": True,
+                    "stretch": True,
+                },
+            },
+            {
+                "operation_id": "generate_atlas_image",
+                "type": "GENERATE_IMAGE_ASSET",
+                "prompt": "clean uv atlas debug image",
+                "image_name": "AI Atlas Image",
+                "width": 64,
+                "height": 64,
+                "color_space": "sRGB",
+                "pack": True,
+            },
+            {
+                "operation_id": "fit_to_image_region",
+                "type": "FIT_UV_ISLANDS_TO_IMAGE_REGION",
+                "target_id": uv_target_id,
+                "uv_map_name": "UVMap",
+                "island_set_id": "result:select_islands",
+                "image_id": "result:generate_atlas_image",
+                "region_min_uv": [0.0, 0.0],
+                "region_max_uv": [0.5, 0.5],
+                "preserve_aspect": True,
+            },
+            {
+                "operation_id": "atlas_layout",
+                "type": "CREATE_TEXTURE_ATLAS_LAYOUT",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "atlas_name": "AI Texture Atlas",
+                "image_id": "result:generate_atlas_image",
+                "atlas_resolution": [2048, 2048],
+                "margin": 0.02,
+                "allow_rotation": True,
+            },
+            {
+                "operation_id": "assign_atlas_regions",
+                "type": "ASSIGN_ATLAS_TEXTURE_REGIONS",
+                "target_id": uv_target_id,
+                "material_id": uv_material_id,
+                "atlas_id": "result:atlas_layout",
+                "assignments": [
+                    {
+                        "material_id": uv_material_id,
+                        "region_name": "MainMaterial",
+                        "bounds_min": [0.0, 0.0],
+                        "bounds_max": [0.5, 0.5],
+                    }
+                ],
+            },
+            {
+                "operation_id": "uv_guide_image",
+                "type": "BAKE_UV_LAYOUT_GUIDE_IMAGE",
+                "target_ids": [uv_target_id],
+                "uv_map_name": "UVMap",
+                "image_name": "AI UV Guide",
+                "width": 64,
+                "height": 64,
+                "line_color": [1.0, 1.0, 1.0, 1.0],
+                "background_color": [0.0, 0.0, 0.0, 1.0],
+                "pack": True,
+            },
+            {
+                "operation_id": "grid_material",
+                "type": "CREATE_UV_GRID_TEST_MATERIAL",
+                "name": "AI UV Grid Material",
+                "grid_scale": 8.0,
+                "color_a": [1.0, 1.0, 1.0, 1.0],
+                "color_b": [0.1, 0.1, 0.1, 1.0],
+            },
+            {
+                "operation_id": "create_uv_variant",
+                "type": "CREATE_UV_MAP_VARIANT",
+                "target_id": uv_target_id,
+                "source_uv_map_name": "UVMap",
+                "variant_uv_map_name": "AI_UV_Variant",
+                "variant_label": "Less stretched unwrap",
+                "copy_pins": True,
+            },
+            {
+                "operation_id": "tag_uv_variant",
+                "type": "TAG_UV_VARIANT",
+                "target_id": uv_target_id,
+                "variant_id": "result:create_uv_variant",
+                "label": "Review Candidate",
+                "prompt_summary": "Packed with more even texel density.",
+            },
+            {
+                "operation_id": "uv_variant_preview",
+                "type": "CREATE_UV_COMPARISON_PREVIEW",
+                "target_id": uv_target_id,
+                "source_uv_map_name": "UVMap",
+                "variant_id": "result:create_uv_variant",
+                "preview_name": "AI UV Variant Preview",
+                "width": 64,
+                "height": 64,
+                "pack": True,
+            },
+            {
+                "operation_id": "accept_uv_variant",
+                "type": "ACCEPT_UV_VARIANT",
+                "target_id": uv_target_id,
+                "variant_id": "result:create_uv_variant",
+                "replace_uv_map_name": "UVMap",
+                "make_active": True,
+                "make_render_active": True,
+            },
+            {
+                "operation_id": "reject_uv_variant",
+                "type": "REJECT_UV_VARIANT",
+                "target_id": uv_target_id,
+                "variant_id": "result:create_uv_variant",
+                "remove_variant": True,
+            },
+        ],
+    )
+    result = execute_plan(bpy.context, plan, snapshot)
+
+    assert result.completed_operations == len(plan.operations)
+    assert data.texts["AI UV Diagnostic"] is not None
+    assert data.images["AI UV Overlap Preview"]["ai_preview_kind"] == (
+        "CREATE_UV_OVERLAP_PREVIEW"
+    )
+    assert data.images["AI UV Guide"]["ai_preview_kind"] == "uv_layout_guide"
+    assert data.materials["AI UV Grid Material"]["ai_uv_grid_scale"] == 8.0
+    assert "ai_uv_atlas_region_0" in uv_material
+    assert mesh.uv_layers.get("UVMap") is not None
+    assert mesh.uv_layers.get("AI_UV_Variant") is None
+    assert mesh.uv_layers.get("AI_Unused") is None
+
+
 _run_shader_track_execution()
 _run_future_tracks_execution()
 _run_residual_features_execution()
+_run_advanced_shading_execution()
+_run_advanced_uv_execution()
 print("Blender controlled execution tests: PASS")

@@ -136,6 +136,27 @@ def _operation_references(operation: Operation) -> tuple[tuple[str, TargetKind],
     if isinstance(material_id, str):
         references.append((material_id, TargetKind.MATERIAL))
 
+    for key in ("source_material_id", "replace_material_id", "canonical_material_id", "variant_id"):
+        referenced_material_id = operation.payload.get(key)
+        if isinstance(referenced_material_id, str):
+            references.append((referenced_material_id, TargetKind.MATERIAL))
+
+    material_ids = operation.payload.get("material_ids")
+    if isinstance(material_ids, tuple):
+        references.extend(
+            (material_id, TargetKind.MATERIAL)
+            for material_id in material_ids
+            if isinstance(material_id, str)
+        )
+
+    assignments = operation.payload.get("assignments")
+    if isinstance(assignments, tuple):
+        for assignment in assignments:
+            if isinstance(assignment, Mapping):
+                assignment_material_id = assignment.get("material_id")
+                if isinstance(assignment_material_id, str):
+                    references.append((assignment_material_id, TargetKind.MATERIAL))
+
     region = operation.payload.get("region")
     if isinstance(region, Mapping):
         region_material_id = region.get("material_id")

@@ -12,8 +12,9 @@ requests fail closed. Provider instructions explicitly require unsupported file,
 asset, and script requests to return clarification rather than inventing a workaround.
 
 User-selected plan limits control the number of operations, targets, and duplicate outputs. Defaults
-remain 20/100/100, while controlled hard maxima are 100/500/1,000. Captured limits are enforced in
-both the provider schema and local validation before a plan can be retained.
+and controlled hard maxima are 1,000 operations, 1,000 targets, and 10,000 duplicate outputs.
+Captured limits are enforced in both the provider schema and local validation before a plan can be
+retained.
 
 ## Risk Classification
 

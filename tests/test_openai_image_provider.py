@@ -86,6 +86,26 @@ def test_openai_image_provider_requires_gpt_image_model() -> None:
         OpenAIImageProvider("sk-test", model="dall-e-3")
 
 
+def test_openai_image_provider_accepts_explicit_api_key_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    session = FakeSession(
+        FakeResponse(data={"data": [{"b64_json": base64.b64encode(b"x").decode()}]})
+    )
+    provider = OpenAIImageProvider.from_environment(api_key="sk-session", session=session)
+
+    provider.generate_texture(
+        prompt="texture",
+        width=64,
+        height=64,
+        destination=tmp_path / "unused.png",
+    )
+
+    assert session.posts[0]["headers"]["Authorization"] == "Bearer sk-session"
+
+
 def test_openai_image_provider_reports_http_errors(tmp_path: Path) -> None:
     session = FakeSession(
         FakeResponse(
@@ -120,6 +140,9 @@ def test_openai_image_provider_reports_missing_image_data(tmp_path: Path) -> Non
 def test_openai_image_generation_enabled_uses_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("OPENAI_IMAGE_GENERATION_ENABLED", raising=False)
+    assert openai_image_generation_enabled() is True
+
     monkeypatch.setenv("OPENAI_IMAGE_GENERATION_ENABLED", "true")
     assert openai_image_generation_enabled() is True
 

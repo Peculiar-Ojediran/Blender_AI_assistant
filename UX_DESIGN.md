@@ -264,8 +264,8 @@ Blender preferences.
 - Local schema and scene validation cannot be disabled.
 - Arbitrary Python execution is unavailable.
 - The collapsible `Plan Limits` panel and preferences expose numeric limits for operations per plan,
-  targets per operation, and total duplicate outputs. Values default to 20/100/100 and have hard
-  maxima of 100/500/1,000.
+  targets per operation, and total duplicate outputs. Values default to 1,000/1,000/10,000 and use
+  the same values as hard maxima.
 - Any future convenience setting must preserve these minimum guarantees.
 
 ## Error Design

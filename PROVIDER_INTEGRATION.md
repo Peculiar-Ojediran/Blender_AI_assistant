@@ -39,7 +39,8 @@ Each request uses `POST /v1/responses` with:
 - A configurable model and reasoning effort.
 - A strict JSON Schema Structured Output.
 - `store: false`.
-- A configurable maximum output-token limit.
+- A configurable maximum output-token limit. Blender preferences default to 32,768 output tokens and
+  allow selection up to 131,072.
 - System instructions that treat the prompt and scene context as untrusted data.
 - A compact, privacy-filtered scene context bounded by the configured character limit.
 
@@ -53,7 +54,8 @@ Each request uses `POST /v1/chat/completions` under the configured base URL with
 
 - A configurable NIM model.
 - `stream: false`.
-- A configurable maximum output-token limit through `max_tokens`.
+- A configurable maximum output-token limit through `max_tokens`. Blender preferences default to
+  32,768 output tokens and allow selection up to 131,072.
 - Low-temperature sampling defaults for predictable planning.
 - NVIDIA guided JSON through `nvext.guided_json`.
 - The same system instructions and compact scene context used by the OpenAI path.
@@ -70,11 +72,12 @@ request still fails closed.
 
 ## OpenAI Image Request Contract
 
-`GENERATE_TEXTURE_IMAGE` uses deterministic local pattern generation by default. When
-`OPENAI_IMAGE_GENERATION_ENABLED=true`, it uses `POST /v1/images/generations` with the same
-`OPENAI_API_KEY`, `gpt-image-2` by default, one PNG image, and low quality by default. The provider
-expects `b64_json` image data, writes it to a temporary PNG, loads it into Blender, and scales it to
-the operation's requested dimensions.
+`GENERATE_IMAGE_ASSET` and `GENERATE_TEXTURE_IMAGE` use `POST /v1/images/generations` by default
+with `gpt-image-2` by default, one PNG image, and low quality by default. The image provider resolves
+credentials from `OPENAI_API_KEY` first, then the Blender session key when OpenAI is the selected
+provider. It expects `b64_json` image data, writes it to a temporary PNG, loads it into Blender, and
+scales it to the operation's requested dimensions. Set `OPENAI_IMAGE_GENERATION_ENABLED=false` to
+disable billable image calls and use deterministic local pattern generation instead.
 
 Optional settings:
 
@@ -82,8 +85,9 @@ Optional settings:
 - `OPENAI_IMAGE_QUALITY`, default `low`; allowed values are `auto`, `low`, `medium`, and `high`.
 - `OPENAI_IMAGE_TIMEOUT`, default 180 seconds.
 
-The operation remains high risk because it can call a billable external image provider and create
-image data. The local deterministic fallback remains available for routine tests and offline work.
+The operation remains high risk because it calls a billable external image provider by default and
+creates image data. The local deterministic fallback remains available for routine tests and offline
+work by explicitly setting `OPENAI_IMAGE_GENERATION_ENABLED=false`.
 
 ## Timeouts, Retries, and Failures
 
