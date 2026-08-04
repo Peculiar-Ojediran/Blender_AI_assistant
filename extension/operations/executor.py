@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 
 from ..config import resolve_environment_value
 from ..context import SceneContextSnapshot, TargetKind
+from ..internet.policy import InternetDownloadPolicy, InternetPolicyError, validate_asset_url
 from ..providers.openai_images import OpenAIImageProvider, openai_image_generation_enabled
 from ..providers.registry import PROVIDER_OPENAI
 from .models import Operation, OperationPlan, OperationType, PlanStatus
@@ -331,6 +332,7 @@ class _PreflightSimulation:
         self.modifier_names: dict[str, set[str]] = {}
         self.shape_key_names: dict[str, set[str]] = {}
         self.vertex_group_names: dict[str, set[str]] = {}
+        self.face_set_names: dict[str, set[str]] = {}
         self.scene_collections = set(_scene_collections(context.scene.collection))
         self.collection_names = {
             item.name: f"collection:{int(item.session_uid)}"
@@ -480,6 +482,12 @@ class _PreflightSimulation:
             OperationType.ADD_REMESH_MODIFIER: self._add_modifier,
             OperationType.SCULPT_SMOOTH_REGION: self._sculpt_smooth_region,
             OperationType.APPLY_SCULPT_BRUSH_STROKES: self._apply_sculpt_brush_strokes,
+            OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES: (
+                self._apply_advanced_sculpt_brush_strokes
+            ),
+            OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES: (
+                self._apply_advanced_sculpt_brush_strokes
+            ),
             OperationType.CREATE_GEOMETRY_NODES_PRESET: self._add_modifier,
             OperationType.SET_GEOMETRY_NODE_INPUT: self._set_modifier_properties,
             OperationType.CREATE_GEOMETRY_NODE_GROUP_TEMPLATE: self._add_modifier,
@@ -489,6 +497,14 @@ class _PreflightSimulation:
             OperationType.CREATE_DISPLACED_COPY: self._create_generated_copy,
             OperationType.CREATE_REMESHED_COPY: self._create_generated_copy,
             OperationType.CREATE_DYNAMIC_TOPOLOGY_COPY: self._create_generated_copy,
+            OperationType.CREATE_VOXEL_REMESH_COPY: self._create_named_generated_copy,
+            OperationType.APPLY_VOXEL_REMESH_TO_GENERATED_COPY: (
+                self._apply_voxel_remesh_to_generated_copy
+            ),
+            OperationType.CREATE_QUAD_REMESH_PREP_COPY: self._create_named_generated_copy,
+            OperationType.CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY: (
+                self._create_named_generated_copy
+            ),
             OperationType.REPLACE_OBJECT_WITH_GENERATED_COPY: self._replace_with_copy,
             OperationType.APPLY_GENERATED_MESH_TO_OBJECT: self._replace_with_copy,
             OperationType.CREATE_SCULPT_REGION_FROM_MATERIAL: self._create_sculpt_region,
@@ -503,8 +519,23 @@ class _PreflightSimulation:
             OperationType.COMBINE_SCULPT_MASKS: self._combine_sculpt_masks,
             OperationType.CREATE_FACE_SET_FROM_MATERIAL: self._create_face_set,
             OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: self._create_face_set,
+            OperationType.CREATE_FACE_SET_FROM_NORMAL_ANGLE: self._create_face_set,
+            OperationType.CREATE_FACE_SET_FROM_POLYGON_AREA: self._create_face_set,
+            OperationType.EXPAND_FACE_SET: self._face_set_operation,
+            OperationType.SHRINK_FACE_SET: self._face_set_operation,
+            OperationType.MERGE_FACE_SETS: self._face_set_operation,
+            OperationType.RENAME_FACE_SET: self._face_set_operation,
             OperationType.APPLY_SCULPT_REGION_OPERATION: self._apply_sculpt_region_operation,
             OperationType.ADD_MULTIRES_MODIFIER: self._add_modifier,
+            OperationType.SUBDIVIDE_MULTIRES_MODIFIER: self._multires_modifier_operation,
+            OperationType.SET_MULTIRES_LEVELS: self._multires_modifier_operation,
+            OperationType.CREATE_MULTIRES_SCULPT_COPY: self._create_multires_sculpt_copy,
+            OperationType.BAKE_MULTIRES_DISPLACEMENT_PREVIEW: self._multires_preview,
+            OperationType.CREATE_SCULPT_VARIANT_COPY: self._create_sculpt_variant_copy,
+            OperationType.TAG_SCULPT_VARIANT: self._sculpt_variant_operation,
+            OperationType.CREATE_SCULPT_COMPARISON_PREVIEW: self._sculpt_variant_preview,
+            OperationType.ACCEPT_SCULPT_VARIANT: self._accept_sculpt_variant,
+            OperationType.REJECT_SCULPT_VARIANT: self._reject_sculpt_variant,
             OperationType.CREATE_SHAPE_KEY: self._create_shape_key,
             OperationType.CREATE_RIG_SAFE_SHAPE_KEY: self._create_shape_key,
             OperationType.SET_SHAPE_KEY_VALUE: self._set_shape_key_value,
@@ -1082,6 +1113,20 @@ class _PreflightSimulation:
         target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
         self._editable_mesh_object(target)
 
+    def _apply_advanced_sculpt_brush_strokes(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        region_id = operation.payload.get("region_id")
+        if isinstance(region_id, str):
+            region = self.results.get(region_id)
+            if region is None or region.object_type != "SCULPT_REGION":
+                raise ExecutionPreflightError("Sculpt region result is unavailable.")
+        mask_id = operation.payload.get("mask_id")
+        if isinstance(mask_id, str):
+            mask = self.results.get(mask_id)
+            if mask is None or mask.object_type != "SCULPT_MASK":
+                raise ExecutionPreflightError("Sculpt mask result is unavailable.")
+
     def _create_collection(self, operation: Operation) -> None:
         parent_id = operation.payload.get("parent_collection_id")
         self._collection(parent_id)
@@ -1165,6 +1210,31 @@ class _PreflightSimulation:
             object_type="MESH",
         )
 
+    def _create_named_generated_copy(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        if target.live is not None:
+            _ensure_mesh_size_within_limits(target.live)
+        name = str(
+            operation.payload.get(
+                "name",
+                operation.payload.get(
+                    "generated_name",
+                    operation.payload.get("variant_name"),
+                ),
+            )
+        )
+        self._create_object_result(
+            operation,
+            name,
+            supports_materials=True,
+            object_type="MESH",
+        )
+
+    def _apply_voxel_remesh_to_generated_copy(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["generated_object_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+
     def _replace_with_copy(self, operation: Operation) -> None:
         original = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
         generated = self._target(str(operation.payload["generated_object_id"]), TargetKind.OBJECT)
@@ -1247,19 +1317,109 @@ class _PreflightSimulation:
         material_id = operation.payload.get("material_id")
         if isinstance(material_id, str):
             self._target(material_id, TargetKind.MATERIAL)
+        face_set_name = str(operation.payload["face_set_name"])
+        face_sets = self._sim_face_sets(target)
+        if face_set_name in face_sets:
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} already has face set {face_set_name!r}."
+            )
+        face_sets.add(face_set_name)
         reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
         self.results[reference] = _SimTarget(
             TargetKind.OBJECT,
             reference,
-            str(operation.payload["face_set_name"]),
+            face_set_name,
             None,
             object_type="FACE_SET",
         )
+
+    def _face_set_operation(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        face_sets = self._sim_face_sets(target)
+        if operation.type in {OperationType.EXPAND_FACE_SET, OperationType.SHRINK_FACE_SET}:
+            self._require_sim_face_set(target, str(operation.payload["face_set_name"]))
+            return
+        if operation.type is OperationType.MERGE_FACE_SETS:
+            for name in operation.payload["source_face_set_names"]:
+                self._require_sim_face_set(target, str(name))
+            result_name = str(operation.payload["merged_face_set_name"])
+            if result_name in face_sets:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} already has face set {result_name!r}."
+                )
+            face_sets.add(result_name)
+            self.results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"] = _SimTarget(
+                TargetKind.OBJECT,
+                f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}",
+                result_name,
+                None,
+                object_type="FACE_SET",
+            )
+            return
+        if operation.type is OperationType.RENAME_FACE_SET:
+            old_name = str(operation.payload["face_set_name"])
+            new_name = str(operation.payload["new_face_set_name"])
+            self._require_sim_face_set(target, old_name)
+            if new_name in face_sets:
+                raise ExecutionPreflightError(
+                    f"Object {target.name!r} already has face set {new_name!r}."
+                )
+            face_sets.remove(old_name)
+            face_sets.add(new_name)
+            return
+        raise ExecutionPreflightError(f"Unsupported face-set operation {operation.type.value}.")
 
     def _apply_sculpt_region_operation(self, operation: Operation) -> None:
         region = self.results.get(str(operation.payload["region_id"]))
         if region is None or region.object_type != "SCULPT_REGION":
             raise ExecutionPreflightError("Sculpt region result is unavailable.")
+
+    def _multires_modifier_operation(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        modifier_name = str(operation.payload["modifier_name"])
+        if modifier_name not in self._sim_modifiers(target):
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no modifier named {modifier_name!r}."
+            )
+
+    def _create_multires_sculpt_copy(self, operation: Operation) -> None:
+        self._create_named_generated_copy(operation)
+        target = self.results[f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"]
+        self._sim_modifiers(target).add("AI Multires")
+
+    def _multires_preview(self, operation: Operation) -> None:
+        self._multires_modifier_operation(operation)
+        self._create_image_datablock(operation)
+
+    def _create_sculpt_variant_copy(self, operation: Operation) -> None:
+        self._create_named_generated_copy(operation)
+
+    def _sculpt_variant_operation(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["variant_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+
+    def _sculpt_variant_preview(self, operation: Operation) -> None:
+        original = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
+        variant = self._target(str(operation.payload["variant_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(original)
+        self._editable_mesh_object(variant)
+        self._create_image_datablock(operation)
+
+    def _accept_sculpt_variant(self, operation: Operation) -> None:
+        original = self._target(
+            str(operation.payload["original_target_id"]),
+            TargetKind.OBJECT,
+        )
+        variant = self._target(str(operation.payload["variant_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(original)
+        self._editable_mesh_object(variant)
+
+    def _reject_sculpt_variant(self, operation: Operation) -> None:
+        target = self._target(str(operation.payload["variant_id"]), TargetKind.OBJECT)
+        self._editable_mesh_object(target)
+        target.deleted = True
 
     def _create_shape_key(self, operation: Operation) -> None:
         target = self._target(str(operation.payload["target_id"]), TargetKind.OBJECT)
@@ -1463,6 +1623,27 @@ class _PreflightSimulation:
         if group_name not in self._sim_vertex_groups(target):
             raise ExecutionPreflightError(
                 f"Object {target.name!r} has no vertex group {group_name!r}."
+            )
+
+    def _sim_face_sets(self, target: _SimTarget) -> set[str]:
+        face_sets = self.face_set_names.get(target.token)
+        if face_sets is not None:
+            return face_sets
+        names: set[str] = set()
+        if target.live is not None and getattr(target.live, "type", "") == "MESH":
+            names = {
+                str(attribute.name)
+                for attribute in target.live.data.attributes
+                if str(getattr(attribute, "domain", "")) == "FACE"
+                and str(getattr(attribute, "data_type", "")) == "INT"
+            }
+        self.face_set_names[target.token] = names
+        return names
+
+    def _require_sim_face_set(self, target: _SimTarget, face_set_name: str) -> None:
+        if face_set_name not in self._sim_face_sets(target):
+            raise ExecutionPreflightError(
+                f"Object {target.name!r} has no face set {face_set_name!r}."
             )
 
     @staticmethod
@@ -1906,6 +2087,12 @@ def _execute_operation(
         OperationType.APPLY_SCULPT_BRUSH_STROKES: lambda: _apply_sculpt_brush_strokes(
             operation, prepared, results, transaction
         ),
+        OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES: lambda: (
+            _apply_advanced_sculpt_brush_strokes(operation, prepared, results, transaction)
+        ),
+        OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES: lambda: (
+            _apply_symmetric_sculpt_brush_strokes(operation, prepared, results, transaction)
+        ),
         OperationType.CREATE_GEOMETRY_NODES_PRESET: lambda: _create_geometry_nodes_preset(
             operation, prepared, results, transaction
         ),
@@ -1932,6 +2119,18 @@ def _execute_operation(
         ),
         OperationType.CREATE_DYNAMIC_TOPOLOGY_COPY: lambda: _create_dynamic_topology_copy(
             context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_VOXEL_REMESH_COPY: lambda: _create_voxel_remesh_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.APPLY_VOXEL_REMESH_TO_GENERATED_COPY: lambda: (
+            _apply_voxel_remesh_to_generated_copy(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_QUAD_REMESH_PREP_COPY: lambda: _create_quad_remesh_prep_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY: lambda: (
+            _create_dynamic_topology_detail_copy(context, operation, prepared, results, transaction)
         ),
         OperationType.REPLACE_OBJECT_WITH_GENERATED_COPY: lambda: (
             _replace_object_with_generated_copy(operation, prepared, results, transaction)
@@ -1975,10 +2174,55 @@ def _execute_operation(
         OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: lambda: (
             _create_face_set_from_vertex_group(operation, prepared, results, transaction)
         ),
+        OperationType.CREATE_FACE_SET_FROM_NORMAL_ANGLE: lambda: (
+            _create_face_set_from_normal_angle(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_FACE_SET_FROM_POLYGON_AREA: lambda: (
+            _create_face_set_from_polygon_area(operation, prepared, results, transaction)
+        ),
+        OperationType.EXPAND_FACE_SET: lambda: _edit_face_set_by_adjacency(
+            operation, prepared, results, transaction, grow=True
+        ),
+        OperationType.SHRINK_FACE_SET: lambda: _edit_face_set_by_adjacency(
+            operation, prepared, results, transaction, grow=False
+        ),
+        OperationType.MERGE_FACE_SETS: lambda: _merge_face_sets(
+            operation, prepared, results, transaction
+        ),
+        OperationType.RENAME_FACE_SET: lambda: _rename_face_set(
+            operation, prepared, results, transaction
+        ),
         OperationType.APPLY_SCULPT_REGION_OPERATION: lambda: _apply_sculpt_region_operation(
             operation, results, transaction
         ),
         OperationType.ADD_MULTIRES_MODIFIER: lambda: _add_multires_modifier(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.SUBDIVIDE_MULTIRES_MODIFIER: lambda: _subdivide_multires_modifier(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.SET_MULTIRES_LEVELS: lambda: _set_multires_levels(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_MULTIRES_SCULPT_COPY: lambda: _create_multires_sculpt_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.BAKE_MULTIRES_DISPLACEMENT_PREVIEW: lambda: (
+            _bake_multires_displacement_preview(operation, prepared, results, transaction)
+        ),
+        OperationType.CREATE_SCULPT_VARIANT_COPY: lambda: _create_sculpt_variant_copy(
+            context, operation, prepared, results, transaction
+        ),
+        OperationType.TAG_SCULPT_VARIANT: lambda: _tag_sculpt_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.CREATE_SCULPT_COMPARISON_PREVIEW: lambda: (
+            _create_sculpt_comparison_preview(operation, prepared, results, transaction)
+        ),
+        OperationType.ACCEPT_SCULPT_VARIANT: lambda: _accept_sculpt_variant(
+            operation, prepared, results, transaction
+        ),
+        OperationType.REJECT_SCULPT_VARIANT: lambda: _reject_sculpt_variant(
             operation, prepared, results, transaction
         ),
         OperationType.CREATE_SHAPE_KEY: lambda: _create_shape_key(
@@ -6420,12 +6664,15 @@ def _import_asset(
 
         prefix = payload.get("name_prefix")
         source_name = _import_source_name(str(payload["filepath"]), filepath)
+        metadata = payload.get("asset_metadata")
         for item in created:
             data = item.data
             if isinstance(prefix, str):
                 _assign_available_object_name(item, f"{prefix}_{item.name}")
             _move_object_to_collection(item, destination)
             _apply_absolute_transform(item, payload)
+            if isinstance(metadata, Mapping):
+                _apply_asset_metadata(item, metadata)
             transaction.add_rollback(partial(_remove_created_object, item, data))
             transaction.record(
                 ChangeRecord(
@@ -6439,6 +6686,29 @@ def _import_asset(
             )
     finally:
         _remove_temporary_import_source(filepath)
+
+
+def _apply_asset_metadata(item: Any, metadata: Mapping[str, Any]) -> None:
+    property_names = {
+        "title": "ai_asset_title",
+        "source_page_url": "ai_asset_source_page",
+        "direct_url": "ai_asset_direct_url",
+        "final_url": "ai_asset_final_url",
+        "license_label": "ai_asset_license",
+        "license_url": "ai_asset_license_url",
+        "attribution": "ai_asset_attribution",
+        "size_bytes": "ai_asset_size_bytes",
+        "confidence": "ai_asset_confidence",
+    }
+    for source_key, property_name in property_names.items():
+        value = metadata.get(source_key)
+        if (isinstance(value, str) and value) or (
+            isinstance(value, int | float) and not isinstance(value, bool)
+        ):
+            item[property_name] = value
+    warnings = metadata.get("warnings")
+    if isinstance(warnings, tuple | list) and warnings:
+        item["ai_asset_warnings"] = "\n".join(str(warning) for warning in warnings)
 
 
 def _link_or_append_blend_data(
@@ -6712,6 +6982,85 @@ def _apply_sculpt_brush_strokes(
             ChangeKind.UPDATED,
             _brush_stroke_detail(strokes),
         )
+    )
+
+
+def _apply_advanced_sculpt_brush_strokes(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    radius = float(operation.payload["radius"])
+    strokes = _prepare_brush_strokes(item, tuple(operation.payload["strokes"]), radius)
+    strokes = _filter_sculpt_strokes_by_region_and_mask(operation, results, item, strokes)
+    affected = _prepared_brush_affected_vertices(strokes)
+    if not affected:
+        transaction.record(
+            ChangeRecord(
+                operation.operation_id,
+                target_id,
+                "object",
+                item.name,
+                ChangeKind.UPDATED,
+                "Skipped sculpt brush strokes because no vertices matched the region or mask",
+            )
+        )
+        return
+    old_positions = _mesh_vertex_positions(item, tuple(sorted(affected)))
+    transaction.add_rollback(partial(_restore_mesh_vertices, item, old_positions))
+    directions = tuple(
+        _normalized_vector(raw_stroke["direction"])
+        for raw_stroke in operation.payload["strokes"]
+    )
+    _apply_advanced_brush_strokes(
+        item,
+        strokes,
+        directions,
+        str(operation.payload["brush_type"]),
+        radius,
+        float(operation.payload["strength"]),
+        str(operation.payload["falloff"]),
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            target_id,
+            "object",
+            item.name,
+            ChangeKind.UPDATED,
+            _brush_stroke_detail(strokes),
+        )
+    )
+
+
+def _apply_symmetric_sculpt_brush_strokes(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    target_id = str(operation.payload["target_id"])
+    item = _runtime_target(target_id, prepared, results)
+    _require_mesh_object(item, target_id)
+    mirrored_payload = {
+        **operation.payload,
+        "strokes": _mirrored_sculpt_stroke_payloads(item, operation.payload),
+        "preserve_original": True,
+    }
+    mirrored_operation = Operation(
+        operation.operation_id,
+        OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES,
+        MappingProxyType(mirrored_payload),
+    )
+    _apply_advanced_sculpt_brush_strokes(
+        mirrored_operation,
+        prepared,
+        results,
+        transaction,
     )
 
 
@@ -7882,15 +8231,17 @@ def _is_url(source: str) -> bool:
 
 
 def _validate_import_url(source: str, allowed_suffixes: set[str]) -> None:
-    parsed = urlparse(source)
-    if parsed.scheme.lower() != "https":
-        raise ExecutionPreflightError("Asset URL imports must use HTTPS.")
-    if not parsed.netloc:
-        raise ExecutionPreflightError("Asset URL imports require a host name.")
-    suffix = Path(unquote(parsed.path)).suffix.lower()
-    if suffix not in allowed_suffixes:
-        suffixes = ", ".join(sorted(allowed_suffixes))
-        raise ExecutionPreflightError(f"Asset URL must end with one of: {suffixes}.")
+    try:
+        validate_asset_url(
+            source,
+            policy=InternetDownloadPolicy(
+                max_asset_size_mb=MAX_URL_IMPORT_BYTES // (1024 * 1024),
+                allowed_extensions=tuple(allowed_suffixes),
+                timeout_seconds=URL_IMPORT_TIMEOUT_SECONDS,
+            ),
+        )
+    except InternetPolicyError as exc:
+        raise ExecutionPreflightError(str(exc)) from exc
 
 
 def _download_import_url(source: str, allowed_suffixes: set[str]) -> Path:
@@ -8811,13 +9162,18 @@ def _modifier_values(modifier: Any) -> Mapping[str, Any]:
         "count",
         "relative_offset_displace",
         "levels",
+        "sculpt_levels",
         "render_levels",
+        "mode",
+        "voxel_size",
+        "adaptivity",
+        "use_smooth_shade",
     ):
         if hasattr(modifier, name):
             value = getattr(modifier, name)
             try:
                 values[name] = tuple(float(component) for component in value)
-            except TypeError:
+            except (TypeError, ValueError):
                 values[name] = value
     if hasattr(modifier, "use_axis"):
         values["use_axis"] = tuple(bool(value) for value in modifier.use_axis)
@@ -8837,6 +9193,92 @@ def _remove_modifier(item: Any, modifier_name: str) -> None:
     modifier = item.modifiers.get(modifier_name)
     if modifier is not None:
         item.modifiers.remove(modifier)
+
+
+def _require_multires_modifier(item: Any, modifier_name: str) -> Any:
+    modifier = item.modifiers.get(modifier_name)
+    if modifier is None:
+        raise ExecutionError(f"Object {item.name!r} has no modifier {modifier_name!r}.")
+    if str(getattr(modifier, "type", "")) != "MULTIRES":
+        raise ExecutionError(f"Modifier {modifier_name!r} is not a Multires modifier.")
+    return modifier
+
+
+def _ensure_multires_total_levels(
+    context: Any,
+    item: Any,
+    modifier: Any,
+    target_level: int,
+) -> None:
+    if target_level <= 0:
+        return
+    import bpy
+
+    current_total = int(getattr(modifier, "total_levels", 0))
+    if current_total >= target_level:
+        return
+
+    active_object = context.view_layer.objects.active
+    selected_objects = tuple(context.selected_objects)
+    active_mode = str(getattr(active_object, "mode", "OBJECT")) if active_object else "OBJECT"
+    try:
+        if active_object is not None and active_mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        for selected in selected_objects:
+            selected.select_set(False)
+        item.select_set(True)
+        context.view_layer.objects.active = item
+        while int(getattr(modifier, "total_levels", 0)) < target_level:
+            result = cast(
+                set[str],
+                bpy.ops.object.multires_subdivide(
+                    modifier=str(modifier.name),
+                    mode="CATMULL_CLARK",
+                ),
+            )
+            if "FINISHED" not in result:
+                raise ExecutionError(
+                    f"Blender could not subdivide Multires modifier {modifier.name!r}."
+                )
+    finally:
+        item.select_set(False)
+        for selected in selected_objects:
+            with suppress(ReferenceError):
+                selected.select_set(True)
+        if active_object is not None:
+            with suppress(ReferenceError):
+                context.view_layer.objects.active = active_object
+                if active_mode != "OBJECT":
+                    bpy.ops.object.mode_set(mode=cast(Any, active_mode))
+
+
+def _ensure_assistant_sculpt_variant(item: Any) -> None:
+    _ensure_editable_mesh(item)
+    if str(item.get("ai_generated_variant", "")) != "sculpt_variant":
+        raise ExecutionError("Sculpt variant operations require an assistant sculpt variant.")
+
+
+def _configure_voxel_remesh_modifier(item: Any, payload: Mapping[str, Any]) -> Any:
+    modifier = item.modifiers.new("AI Voxel Remesh", "REMESH")
+    _set_voxel_remesh_modifier_values(modifier, payload)
+    return modifier
+
+
+def _set_voxel_remesh_modifier_values(modifier: Any, payload: Mapping[str, Any]) -> None:
+    if hasattr(modifier, "mode"):
+        modifier.mode = "VOXEL"
+    if hasattr(modifier, "voxel_size"):
+        modifier.voxel_size = float(payload["voxel_size"])
+    if hasattr(modifier, "adaptivity"):
+        modifier.adaptivity = float(payload["adaptivity"])
+    if hasattr(modifier, "use_smooth_shade"):
+        modifier.use_smooth_shade = bool(payload["preserve_volume"])
+
+
+def _dynamic_topology_detail_cuts(detail_level: float, method: str) -> int:
+    if method == "constant_detail":
+        return max(0, min(2, int(detail_level // 32.0)))
+    return max(0, min(2, int(detail_level // 16.0)))
 
 
 def _remove_displace_modifier(item: Any, modifier_name: str, texture: Any) -> None:
@@ -9142,6 +9584,135 @@ def _apply_brush_strokes(
     item.data.update()
 
 
+def _filter_sculpt_strokes_by_region_and_mask(
+    operation: Operation,
+    results: Mapping[str, Any],
+    item: Any,
+    strokes: tuple[_PreparedBrushStroke, ...],
+) -> tuple[_PreparedBrushStroke, ...]:
+    allowed: set[int] | None = None
+    region_id = operation.payload.get("region_id")
+    if isinstance(region_id, str):
+        region = _runtime_sculpt_region(region_id, results)
+        if region.target != item:
+            raise ExecutionError("Sculpt region belongs to a different object.")
+        allowed = set(region.vertex_indices)
+
+    mask_id = operation.payload.get("mask_id")
+    if isinstance(mask_id, str):
+        group = _runtime_sculpt_mask(mask_id, results)
+        mask_indices = {
+            index
+            for index, weight in _vertex_group_weights(item, group).items()
+            if weight > 0.0
+        }
+        allowed = mask_indices if allowed is None else allowed.intersection(mask_indices)
+
+    if allowed is None:
+        return strokes
+    return tuple(
+        _PreparedBrushStroke(
+            stroke.location,
+            stroke.normal,
+            stroke.pressure,
+            frozenset(index for index in stroke.affected_indices if index in allowed),
+            stroke.snapped_to_nearest,
+        )
+        for stroke in strokes
+    )
+
+
+def _apply_advanced_brush_strokes(
+    item: Any,
+    strokes: tuple[_PreparedBrushStroke, ...],
+    directions: tuple[Any, ...],
+    brush_type: str,
+    radius: float,
+    strength: float,
+    falloff: str,
+) -> None:
+    vertices = item.data.vertices
+    for stroke, direction in zip(strokes, directions, strict=True):
+        old_positions = {
+            int(vertex.index): vertex.co.copy()
+            for vertex in vertices
+            if int(vertex.index) in stroke.affected_indices
+        }
+        for index, coordinate in old_positions.items():
+            distance = (coordinate - stroke.location).length
+            factor = strength * stroke.pressure * _brush_falloff(distance / radius, falloff)
+            if brush_type in {"clay", "clay_strips"}:
+                multiplier = 0.8 if brush_type == "clay_strips" else 1.0
+                vertices[index].co = coordinate + stroke.normal * (factor * radius * multiplier)
+            elif brush_type == "crease":
+                vertices[index].co = coordinate - stroke.normal * (factor * radius)
+            elif brush_type == "pinch":
+                to_center = stroke.location - coordinate
+                if to_center.length > 1e-9:
+                    vertices[index].co = coordinate + to_center.normalized() * (
+                        factor * radius
+                    )
+            elif brush_type == "scrape":
+                plane_distance = (coordinate - stroke.location).dot(stroke.normal)
+                vertices[index].co = coordinate - stroke.normal * (plane_distance * factor)
+            elif brush_type in {"grab", "snake_hook", "pose"}:
+                multiplier = {"grab": 1.0, "snake_hook": 1.25, "pose": 0.5}[brush_type]
+                vertices[index].co = coordinate + direction * (factor * radius * multiplier)
+            else:
+                raise ExecutionError(f"Unsupported advanced sculpt brush type: {brush_type}.")
+    item.data.update()
+
+
+def _mirrored_sculpt_stroke_payloads(
+    item: Any,
+    payload: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    from mathutils import Vector
+
+    axes = tuple(str(axis) for axis in payload["mirror_axes"])
+    origin_data = payload["symmetry_origin"]
+    origin_kind = str(origin_data["kind"])
+    if origin_kind == "object_origin":
+        origin = Vector((0.0, 0.0, 0.0))
+    elif origin_kind == "world_origin":
+        try:
+            origin = item.matrix_world.inverted() @ Vector((0.0, 0.0, 0.0))
+        except Exception:
+            origin = Vector((0.0, 0.0, 0.0))
+    else:
+        origin = Vector(tuple(float(value) for value in origin_data["location"]))
+    return tuple(
+        _mirror_sculpt_stroke(raw_stroke, axes, origin, mirror_mask)
+        for raw_stroke in payload["strokes"]
+        for mirror_mask in range(1 << len(axes))
+    )
+
+
+def _mirror_sculpt_stroke(
+    stroke: Mapping[str, Any],
+    axes: tuple[str, ...],
+    origin: Any,
+    mirror_mask: int,
+) -> Mapping[str, Any]:
+    axis_indices = {"x": 0, "y": 1, "z": 2}
+    location = [float(value) for value in stroke["location"]]
+    normal = [float(value) for value in stroke["normal"]]
+    direction = [float(value) for value in stroke["direction"]]
+    for bit, axis in enumerate(axes):
+        if not mirror_mask & (1 << bit):
+            continue
+        component = axis_indices[axis]
+        location[component] = float(origin[component]) * 2.0 - location[component]
+        normal[component] = -normal[component]
+        direction[component] = -direction[component]
+    return {
+        "location": location,
+        "normal": normal,
+        "direction": direction,
+        "pressure": float(stroke["pressure"]),
+    }
+
+
 def _brush_stroke_detail(strokes: tuple[_PreparedBrushStroke, ...]) -> str:
     snapped_count = sum(1 for stroke in strokes if stroke.snapped_to_nearest)
     if snapped_count:
@@ -9427,6 +9998,128 @@ def _create_dynamic_topology_copy(
     )
 
 
+def _create_voxel_remesh_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    try:
+        _configure_voxel_remesh_modifier(copy, operation.payload)
+        copy["ai_generated_variant"] = "voxel_remeshed"
+        copy["ai_voxel_size"] = float(operation.payload["voxel_size"])
+        copy["ai_adaptivity"] = float(operation.payload["adaptivity"])
+        copy["ai_preserve_volume"] = bool(operation.payload["preserve_volume"])
+    except Exception:
+        _remove_created_object(copy, copy.data)
+        raise
+    _register_created_object(
+        operation,
+        copy,
+        results,
+        transaction,
+        "Created voxel-remesh mesh copy",
+    )
+
+
+def _apply_voxel_remesh_to_generated_copy(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["generated_object_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    modifier = item.modifiers.get("AI Voxel Remesh")
+    if modifier is None:
+        modifier = _configure_voxel_remesh_modifier(item, operation.payload)
+        transaction.add_rollback(partial(_remove_modifier, item, modifier.name))
+    else:
+        old_values = _modifier_values(modifier)
+        _set_voxel_remesh_modifier_values(modifier, operation.payload)
+        transaction.add_rollback(partial(_restore_modifier_properties, modifier, old_values))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            "Updated voxel remesh settings on generated copy",
+        )
+    )
+
+
+def _create_quad_remesh_prep_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["name"]))
+    try:
+        copy["ai_generated_variant"] = "quad_remesh_prep"
+        copy["ai_target_face_count"] = int(operation.payload["target_face_count"])
+        copy["ai_preserve_sharp_edges"] = bool(operation.payload["preserve_sharp_edges"])
+    except Exception:
+        _remove_created_object(copy, copy.data)
+        raise
+    _register_created_object(
+        operation,
+        copy,
+        results,
+        transaction,
+        "Created quad-remesh preparation copy",
+    )
+
+
+def _create_dynamic_topology_detail_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    import bmesh
+
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["generated_name"]))
+    mesh = copy.data
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        cuts = _dynamic_topology_detail_cuts(
+            float(operation.payload["detail_level"]),
+            str(operation.payload["method"]),
+        )
+        if cuts > 0:
+            bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=True)
+        bm.to_mesh(mesh)
+        mesh.update()
+        _ensure_mesh_size_within_limits(copy)
+        copy["ai_generated_variant"] = "dynamic_topology_detail"
+        copy["ai_detail_level"] = float(operation.payload["detail_level"])
+        copy["ai_detail_method"] = str(operation.payload["method"])
+    except Exception:
+        _remove_created_object(copy, copy.data)
+        raise
+    finally:
+        with suppress(Exception):
+            bm.free()
+    _register_created_object(
+        operation,
+        copy,
+        results,
+        transaction,
+        "Created detailed dynamic-topology-style copy",
+    )
+
+
 def _replace_object_with_generated_copy(
     operation: Operation,
     prepared: PreparedExecution,
@@ -9673,6 +10366,139 @@ def _create_face_set_from_vertex_group(
     )
 
 
+def _create_face_set_from_normal_angle(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    indices = _face_indices_from_normal_angle(
+        item,
+        int(operation.payload["seed_face_index"]),
+        float(operation.payload["angle_degrees"]),
+    )
+    _create_face_set_attribute(
+        operation,
+        results,
+        transaction,
+        item,
+        str(operation.payload["face_set_name"]),
+        indices,
+    )
+
+
+def _create_face_set_from_polygon_area(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    indices = _face_indices_from_polygon_area(
+        item,
+        float(operation.payload["min_area"]),
+        float(operation.payload["max_area"]),
+    )
+    _create_face_set_attribute(
+        operation,
+        results,
+        transaction,
+        item,
+        str(operation.payload["face_set_name"]),
+        indices,
+    )
+
+
+def _edit_face_set_by_adjacency(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+    *,
+    grow: bool,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    attribute = _require_face_set_attribute(item, str(operation.payload["face_set_name"]))
+    old_values = _face_set_values(attribute)
+    transaction.add_rollback(partial(_restore_face_set_values, attribute, old_values))
+    selected = {index for index, value in old_values.items() if value > 0}
+    for _iteration in range(int(operation.payload["iterations"])):
+        if grow:
+            selected = _expanded_face_indices(item, selected)
+        else:
+            selected = _shrunk_face_indices(item, selected)
+    _set_face_set_selected(attribute, selected)
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"{'Expanded' if grow else 'Shrank'} face set {attribute.name}",
+        )
+    )
+
+
+def _merge_face_sets(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    source_attributes = tuple(
+        _require_face_set_attribute(item, str(name))
+        for name in operation.payload["source_face_set_names"]
+    )
+    indices = tuple(
+        sorted(
+            {
+                index
+                for attribute in source_attributes
+                for index, value in _face_set_values(attribute).items()
+                if value > 0
+            }
+        )
+    )
+    _create_face_set_attribute(
+        operation,
+        results,
+        transaction,
+        item,
+        str(operation.payload["merged_face_set_name"]),
+        indices,
+    )
+
+
+def _rename_face_set(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    attribute = _require_face_set_attribute(item, str(operation.payload["face_set_name"]))
+    new_name = str(operation.payload["new_face_set_name"])
+    if item.data.attributes.get(new_name) is not None:
+        raise ExecutionError(f"Object {item.name!r} already has a face set {new_name!r}.")
+    old_name = str(attribute.name)
+    attribute.name = new_name
+    transaction.add_rollback(partial(_rename_face_set_attribute, attribute, old_name))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Renamed face set {old_name} to {new_name}",
+        )
+    )
+
+
 def _apply_sculpt_region_operation(
     operation: Operation,
     results: Mapping[str, Any],
@@ -9720,6 +10546,7 @@ def _apply_sculpt_region_operation(
 
 
 def _add_multires_modifier(
+    context: Any,
     operation: Operation,
     prepared: PreparedExecution,
     results: Mapping[str, Any],
@@ -9730,9 +10557,12 @@ def _add_multires_modifier(
         _ensure_editable_mesh(item)
         name = str(operation.payload["name"])
         modifier = item.modifiers.new(name, "MULTIRES")
-        modifier.levels = int(operation.payload["levels"])
-        modifier.render_levels = int(operation.payload["render_levels"])
         transaction.add_rollback(partial(_remove_modifier, item, name))
+        _ensure_multires_total_levels(context, item, modifier, int(operation.payload["levels"]))
+        modifier.levels = int(operation.payload["levels"])
+        if hasattr(modifier, "sculpt_levels"):
+            modifier.sculpt_levels = int(operation.payload["levels"])
+        modifier.render_levels = int(operation.payload["render_levels"])
         transaction.record(
             _datablock_change(
                 operation.operation_id,
@@ -9742,6 +10572,282 @@ def _add_multires_modifier(
                 f"Added Multires modifier {name}",
             )
         )
+
+
+def _subdivide_multires_modifier(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    modifier = _require_multires_modifier(item, str(operation.payload["modifier_name"]))
+    old_values = _modifier_values(modifier)
+    increment = int(operation.payload["levels"])
+    target_level = min(6, int(getattr(modifier, "levels", 0)) + increment)
+    _ensure_multires_total_levels(context, item, modifier, target_level)
+    modifier.levels = target_level
+    if hasattr(modifier, "sculpt_levels"):
+        modifier.sculpt_levels = max(int(getattr(modifier, "sculpt_levels", 0)), target_level)
+    modifier.render_levels = max(int(getattr(modifier, "render_levels", 0)), target_level)
+    transaction.add_rollback(partial(_restore_modifier_properties, modifier, old_values))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Raised Multires modifier {modifier.name} to level {target_level}",
+        )
+    )
+
+
+def _set_multires_levels(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    modifier = _require_multires_modifier(item, str(operation.payload["modifier_name"]))
+    old_values = _modifier_values(modifier)
+    requested_total = max(
+        int(operation.payload["viewport_levels"]),
+        int(operation.payload["sculpt_levels"]),
+        int(operation.payload["render_levels"]),
+    )
+    _ensure_multires_total_levels(context, item, modifier, requested_total)
+    modifier.levels = int(operation.payload["viewport_levels"])
+    if hasattr(modifier, "sculpt_levels"):
+        modifier.sculpt_levels = int(operation.payload["sculpt_levels"])
+    modifier.render_levels = int(operation.payload["render_levels"])
+    transaction.add_rollback(partial(_restore_modifier_properties, modifier, old_values))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            item,
+            "object",
+            ChangeKind.UPDATED,
+            f"Set Multires modifier {modifier.name} levels",
+        )
+    )
+
+
+def _create_multires_sculpt_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["generated_name"]))
+    try:
+        modifier = copy.modifiers.new("AI Multires", "MULTIRES")
+        levels = int(operation.payload["levels"])
+        _ensure_multires_total_levels(context, copy, modifier, levels)
+        modifier.levels = levels
+        if hasattr(modifier, "sculpt_levels"):
+            modifier.sculpt_levels = levels
+        modifier.render_levels = levels
+        copy["ai_generated_variant"] = "multires_sculpt"
+    except Exception:
+        _remove_created_object(copy, copy.data)
+        raise
+    _register_created_object(
+        operation,
+        copy,
+        results,
+        transaction,
+        "Created Multires sculpt copy",
+    )
+
+
+def _bake_multires_displacement_preview(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    _ensure_editable_mesh(item)
+    _require_multires_modifier(item, str(operation.payload["modifier_name"]))
+    image = _new_filled_image(
+        str(operation.payload["image_name"]),
+        int(operation.payload["width"]),
+        int(operation.payload["height"]),
+        (0.5, 0.5, 0.5, 1.0),
+        str(operation.payload["color_space"]),
+        pack=False,
+    )
+    try:
+        _write_generated_pattern(
+            image,
+            f"{item.name}:{operation.payload['modifier_name']}",
+            "gradient",
+            (0.2, 0.2, 0.2, 1.0),
+            (0.8, 0.8, 0.8, 1.0),
+        )
+        image["ai_preview_kind"] = "multires_displacement"
+        if bool(operation.payload["pack"]):
+            image.pack()
+    except Exception:
+        _remove_created_image(image)
+        raise
+    transaction.add_rollback(partial(_remove_created_image, image))
+    reference = f"{RESULT_REFERENCE_PREFIX}{operation.operation_id}"
+    results[reference] = image
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            reference,
+            "image",
+            image.name,
+            ChangeKind.CREATED,
+            "Created Multires displacement preview image",
+        )
+    )
+
+
+def _create_sculpt_variant_copy(
+    context: Any,
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    item = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    copy = _copy_mesh_object(context, item, str(operation.payload["variant_name"]))
+    try:
+        copy["ai_generated_variant"] = "sculpt_variant"
+        copy["ai_variant_label"] = str(operation.payload["variant_label"])
+    except Exception:
+        _remove_created_object(copy, copy.data)
+        raise
+    _register_created_object(
+        operation,
+        copy,
+        results,
+        transaction,
+        "Created sculpt variant copy",
+    )
+
+
+def _tag_sculpt_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    _ensure_assistant_sculpt_variant(variant)
+    snapshot = _custom_property_snapshot(
+        variant,
+        ("ai_variant_label", "ai_variant_prompt_summary"),
+    )
+    variant["ai_variant_label"] = str(operation.payload["label"])
+    variant["ai_variant_prompt_summary"] = str(operation.payload["prompt_summary"])
+    transaction.add_rollback(partial(_restore_custom_properties, variant, snapshot))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            variant,
+            "object",
+            ChangeKind.UPDATED,
+            "Tagged sculpt variant",
+        )
+    )
+
+
+def _create_sculpt_comparison_preview(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: dict[str, Any],
+    transaction: _Transaction,
+) -> None:
+    source = _runtime_target(str(operation.payload["target_id"]), prepared, results)
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    _ensure_editable_mesh(source)
+    _ensure_assistant_sculpt_variant(variant)
+    _create_split_preview_image(
+        operation,
+        results,
+        transaction,
+        str(operation.payload["preview_name"]),
+        (0.1, 0.22, 0.34, 1.0),
+        (0.65, 0.42, 0.16, 1.0),
+        "sculpt_comparison",
+    )
+
+
+def _accept_sculpt_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    original = _runtime_target(str(operation.payload["original_target_id"]), prepared, results)
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    _ensure_editable_mesh(original)
+    _ensure_assistant_sculpt_variant(variant)
+    original_visibility = (bool(original.hide_viewport), bool(original.hide_render))
+    variant_visibility = (bool(variant.hide_viewport), bool(variant.hide_render))
+    original.hide_viewport = bool(operation.payload["hide_original"])
+    original.hide_render = bool(operation.payload["hide_original"])
+    variant.hide_viewport = False
+    variant.hide_render = False
+    snapshot = _custom_property_snapshot(variant, ("ai_sculpt_variant_accepted",))
+    variant["ai_sculpt_variant_accepted"] = True
+    transaction.add_rollback(
+        partial(
+            _restore_replacement_visibility,
+            original,
+            variant,
+            original_visibility,
+            variant_visibility,
+        )
+    )
+    transaction.add_rollback(partial(_restore_custom_properties, variant, snapshot))
+    transaction.record(
+        _datablock_change(
+            operation.operation_id,
+            variant,
+            "object",
+            ChangeKind.UPDATED,
+            f"Accepted sculpt variant for {original.name}",
+        )
+    )
+
+
+def _reject_sculpt_variant(
+    operation: Operation,
+    prepared: PreparedExecution,
+    results: Mapping[str, Any],
+    transaction: _Transaction,
+) -> None:
+    variant = _runtime_target(str(operation.payload["variant_id"]), prepared, results)
+    _ensure_assistant_sculpt_variant(variant)
+    variant_name = str(variant.name)
+    _stage_object_deletion(
+        operation.operation_id,
+        str(operation.payload["variant_id"]),
+        variant,
+        transaction,
+    )
+    transaction.record(
+        ChangeRecord(
+            operation.operation_id,
+            str(operation.payload["variant_id"]),
+            "object",
+            variant_name,
+            ChangeKind.DELETED,
+            "Rejected sculpt variant",
+        )
+    )
 
 
 def _create_shape_key(
@@ -10049,6 +11155,15 @@ def _runtime_sculpt_region(region_id: str, results: Mapping[str, Any]) -> _Sculp
     return region
 
 
+def _runtime_sculpt_mask(mask_id: str, results: Mapping[str, Any]) -> Any:
+    if not mask_id.startswith(RESULT_REFERENCE_PREFIX):
+        raise ExecutionError("Sculpt mask references must use result:<operation_id>.")
+    mask = results.get(mask_id)
+    if mask is None or not hasattr(mask, "weight"):
+        raise ExecutionError(f"Sculpt mask result {mask_id} is unavailable.")
+    return mask
+
+
 def _remove_vertex_group(item: Any, group_name: str) -> None:
     group = item.vertex_groups.get(group_name)
     if group is not None:
@@ -10299,6 +11414,107 @@ def _face_indices_from_vertex_group(item: Any, group_name: str) -> tuple[int, ..
     if not indices:
         raise ExecutionError(f"Vertex group {group_name!r} does not cover any faces.")
     return indices
+
+
+def _face_indices_from_normal_angle(
+    item: Any,
+    seed_face_index: int,
+    angle_degrees: float,
+) -> tuple[int, ...]:
+    _ensure_editable_mesh(item)
+    polygons = item.data.polygons
+    if seed_face_index < 0 or seed_face_index >= len(polygons):
+        raise ExecutionError(f"Object {item.name!r} has no seed face {seed_face_index}.")
+    seed_normal = polygons[seed_face_index].normal
+    threshold = math.cos(math.radians(angle_degrees))
+    indices = tuple(
+        int(polygon.index)
+        for polygon in polygons
+        if float(polygon.normal.dot(seed_normal)) >= threshold
+    )
+    if not indices:
+        raise ExecutionError("Normal-angle face-set selection produced no faces.")
+    return indices
+
+
+def _face_indices_from_polygon_area(
+    item: Any,
+    min_area: float,
+    max_area: float,
+) -> tuple[int, ...]:
+    _ensure_editable_mesh(item)
+    indices = tuple(
+        int(polygon.index)
+        for polygon in item.data.polygons
+        if min_area <= float(polygon.area) <= max_area
+    )
+    if not indices:
+        raise ExecutionError("Polygon-area face-set selection produced no faces.")
+    return indices
+
+
+def _require_face_set_attribute(item: Any, name: str) -> Any:
+    _ensure_editable_mesh(item)
+    attribute = item.data.attributes.get(name)
+    if attribute is None:
+        raise ExecutionError(f"Object {item.name!r} has no face set {name!r}.")
+    if str(getattr(attribute, "domain", "")) != "FACE":
+        raise ExecutionError(f"Attribute {name!r} is not a face-domain attribute.")
+    if str(getattr(attribute, "data_type", "")) != "INT":
+        raise ExecutionError(f"Attribute {name!r} is not an integer face set.")
+    return attribute
+
+
+def _face_set_values(attribute: Any) -> Mapping[int, int]:
+    return MappingProxyType(
+        {index: int(value.value) for index, value in enumerate(attribute.data)}
+    )
+
+
+def _restore_face_set_values(attribute: Any, values: Mapping[int, int]) -> None:
+    for index, value in values.items():
+        attribute.data[index].value = int(value)
+
+
+def _set_face_set_selected(attribute: Any, selected: set[int]) -> None:
+    for index, value in enumerate(attribute.data):
+        value.value = 1 if index in selected else 0
+
+
+def _face_adjacency(item: Any) -> dict[int, set[int]]:
+    edge_faces: dict[tuple[int, int], set[int]] = defaultdict(set)
+    for polygon in item.data.polygons:
+        vertices = [int(vertex_index) for vertex_index in polygon.vertices]
+        for first, second in zip(vertices, [*vertices[1:], vertices[0]], strict=True):
+            edge_faces[(min(first, second), max(first, second))].add(int(polygon.index))
+    adjacency: dict[int, set[int]] = {
+        int(polygon.index): set() for polygon in item.data.polygons
+    }
+    for face_indices in edge_faces.values():
+        for face_index in face_indices:
+            adjacency[face_index].update(face_indices - {face_index})
+    return adjacency
+
+
+def _expanded_face_indices(item: Any, selected: set[int]) -> set[int]:
+    adjacency = _face_adjacency(item)
+    expanded = set(selected)
+    for index in selected:
+        expanded.update(adjacency.get(index, set()))
+    return expanded
+
+
+def _shrunk_face_indices(item: Any, selected: set[int]) -> set[int]:
+    adjacency = _face_adjacency(item)
+    return {
+        index
+        for index in selected
+        if adjacency.get(index, set()).issubset(selected)
+    }
+
+
+def _rename_face_set_attribute(attribute: Any, name: str) -> None:
+    attribute.name = name
 
 
 def _create_face_set_attribute(

@@ -23,10 +23,16 @@ GENERATE_IMAGE_ASSET, GENERATE_TEXTURE_IMAGE, CREATE_PAINT_IMAGE, CREATE_BAKE_TA
 ASSIGN_PAINT_SLOT, APPLY_IMAGE_TO_MATERIAL, ATTACH_GENERATED_TEXTURE, ASSIGN_BAKED_TEXTURE,
 CREATE_GENERATED_GEOMETRY_COPY,
 CREATE_SMOOTHED_COPY, CREATE_DISPLACED_COPY, CREATE_REMESHED_COPY,
+CREATE_VOXEL_REMESH_COPY, CREATE_QUAD_REMESH_PREP_COPY,
+CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY, CREATE_MULTIRES_SCULPT_COPY,
+CREATE_SCULPT_VARIANT_COPY,
 CREATE_SCULPT_REGION_FROM_MATERIAL, CREATE_SCULPT_REGION_FROM_VERTEX_GROUP,
 CREATE_SCULPT_MASK, CREATE_SHADER_GRAPH_TEMPLATE, CREATE_DYNAMIC_TOPOLOGY_COPY,
-CREATE_FACE_SET_FROM_MATERIAL, CREATE_FACE_SET_FROM_VERTEX_GROUP, CREATE_PREVIEW_IMAGE,
-CREATE_RENDER_PREVIEW_IMAGE, INSPECT_UV_MAP, CREATE_UV_DIAGNOSTIC_REPORT,
+CREATE_FACE_SET_FROM_MATERIAL, CREATE_FACE_SET_FROM_VERTEX_GROUP,
+CREATE_FACE_SET_FROM_NORMAL_ANGLE, CREATE_FACE_SET_FROM_POLYGON_AREA, MERGE_FACE_SETS,
+BAKE_MULTIRES_DISPLACEMENT_PREVIEW, CREATE_SCULPT_COMPARISON_PREVIEW,
+CREATE_PREVIEW_IMAGE, CREATE_RENDER_PREVIEW_IMAGE, INSPECT_UV_MAP,
+CREATE_UV_DIAGNOSTIC_REPORT,
 CREATE_UV_OVERLAP_PREVIEW, CREATE_UV_STRETCH_PREVIEW, MARK_UV_SEAMS_BY_ANGLE,
 MARK_UV_SEAMS_BY_MATERIAL, MARK_UV_SEAMS_BY_EDGE_SET, CREATE_UV_ISLANDS_FROM_SEAMS,
 SELECT_UV_ISLANDS_BY_MATERIAL, VALIDATE_UDIM_LAYOUT, VALIDATE_UV_MAP,
@@ -34,7 +40,9 @@ CREATE_TEXTURE_ATLAS_LAYOUT, BAKE_UV_LAYOUT_GUIDE_IMAGE, CREATE_UV_GRID_TEST_MAT
 CREATE_UV_MAP_VARIANT, or CREATE_UV_COMPARISON_PREVIEW operation as result:<operation_id>.
 Never use a forward result reference. Copy the scene context snapshot_id into the plan
 snapshot_id exactly. Asset imports are only supported through IMPORT_ASSET for local or HTTPS
-.obj, .fbx, .gltf, or .glb files. Local blend data access is only supported through
+.obj, .fbx, .gltf, or .glb files. Set IMPORT_ASSET asset_metadata to null unless a locally
+verified internet-discovery handoff provides source, license, attribution, size, confidence, and
+warning metadata. Local blend data access is only supported through
 LINK_OR_APPEND_BLEND_DATA for explicit object or collection names in a local .blend file. External
 asset downloads outside IMPORT_ASSET and LOAD_IMAGE_TEXTURE, arbitrary file reads or writes,
 subprocesses, and generated Python execution are unsupported. For UV and texture requests, prefer
@@ -87,7 +95,22 @@ near the target object in Blender scene units. For sculpt mask requests, use
 CREATE_SCULPT_MASK to create a named vertex-group mask from a sculpt region, then edit existing
 mask names with INVERT_SCULPT_MASK, CLEAR_SCULPT_MASK, BLUR_SCULPT_MASK,
 SHARPEN_SCULPT_MASK, GROW_SCULPT_MASK, or SHRINK_SCULPT_MASK. Use COMBINE_SCULPT_MASKS only with
-distinct existing source and target mask names and a new result mask name. Geometry Nodes must use
+distinct existing source and target mask names and a new result mask name. For advanced sculpting,
+use APPLY_ADVANCED_SCULPT_BRUSH_STROKES only with clay, clay_strips, crease, pinch, scrape, grab,
+snake_hook, or pose brushes, explicit direction vectors, nullable region_id, nullable mask_id, and
+preserve_original true. Use APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES for mirrored strokes with unique
+mirror_axes and object_origin, world_origin, or custom symmetry origin. For FACE_SET workflows, use
+CREATE_FACE_SET_FROM_MATERIAL, CREATE_FACE_SET_FROM_VERTEX_GROUP,
+CREATE_FACE_SET_FROM_NORMAL_ANGLE, CREATE_FACE_SET_FROM_POLYGON_AREA, EXPAND_FACE_SET,
+SHRINK_FACE_SET, MERGE_FACE_SETS, and RENAME_FACE_SET with explicit existing face-set names. For
+voxel and dynamic topology requests, prefer CREATE_VOXEL_REMESH_COPY,
+APPLY_VOXEL_REMESH_TO_GENERATED_COPY, CREATE_QUAD_REMESH_PREP_COPY, and
+CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY so originals stay preserved. For Multires workflows, use
+ADD_MULTIRES_MODIFIER, SUBDIVIDE_MULTIRES_MODIFIER, SET_MULTIRES_LEVELS,
+CREATE_MULTIRES_SCULPT_COPY, and BAKE_MULTIRES_DISPLACEMENT_PREVIEW. Use
+CREATE_SCULPT_VARIANT_COPY, TAG_SCULPT_VARIANT, CREATE_SCULPT_COMPARISON_PREVIEW,
+ACCEPT_SCULPT_VARIANT, and REJECT_SCULPT_VARIANT for reviewable sculpt alternatives.
+Geometry Nodes must use
 only
 CREATE_GEOMETRY_NODES_PRESET, SET_GEOMETRY_NODE_INPUT, or
 CREATE_GEOMETRY_NODE_GROUP_TEMPLATE with approved presets/templates and exposed inputs; do not

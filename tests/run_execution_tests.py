@@ -679,6 +679,7 @@ plan = ready_plan(
             "location": [0.0, 3.0, 0.0],
             "rotation_euler": [0.0, 0.0, 0.0],
             "scale": [1.0, 1.0, 1.0],
+            "asset_metadata": None,
         },
         {
             "operation_id": "append_blend_asset",
@@ -2419,9 +2420,256 @@ def _run_advanced_uv_execution() -> None:
     assert mesh.uv_layers.get("AI_Unused") is None
 
 
+def _run_advanced_sculpting_execution() -> None:
+    _reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    cube = cast(Any, bpy.context.object)
+    cube.name = "AdvancedSculptSource"
+    group = cube.vertex_groups.new(name="SculptAll")
+    group.add(tuple(int(vertex.index) for vertex in cube.data.vertices), 1.0, "REPLACE")
+    snapshot = read_scene_context(
+        bpy.context,
+        ContextOptions(scope=ContextScope.SCENE, include_custom_properties=True),
+    )
+    cube_id = target_id(snapshot, "AdvancedSculptSource", TargetKind.OBJECT)
+    stroke = {
+        "location": [1.0, 1.0, 1.0],
+        "normal": [0.0, 0.0, 1.0],
+        "direction": [0.25, 0.0, 0.0],
+        "pressure": 1.0,
+    }
+
+    plan = ready_plan(
+        snapshot.snapshot_id,
+        [
+            {
+                "operation_id": "advanced_brush",
+                "type": "APPLY_ADVANCED_SCULPT_BRUSH_STROKES",
+                "target_id": cube_id,
+                "brush_type": "clay",
+                "radius": 2.0,
+                "strength": 0.1,
+                "falloff": "linear",
+                "strokes": [stroke],
+                "region_id": None,
+                "mask_id": None,
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "symmetric_brush",
+                "type": "APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES",
+                "target_id": cube_id,
+                "brush_type": "grab",
+                "mirror_axes": ["x"],
+                "symmetry_origin": {"kind": "object_origin", "location": None},
+                "radius": 2.0,
+                "strength": 0.05,
+                "falloff": "smooth",
+                "strokes": [stroke],
+                "region_id": None,
+                "mask_id": None,
+            },
+            {
+                "operation_id": "normal_face_set",
+                "type": "CREATE_FACE_SET_FROM_NORMAL_ANGLE",
+                "target_id": cube_id,
+                "face_set_name": "NormalFaces",
+                "seed_face_index": 0,
+                "angle_degrees": 45.0,
+            },
+            {
+                "operation_id": "area_face_set",
+                "type": "CREATE_FACE_SET_FROM_POLYGON_AREA",
+                "target_id": cube_id,
+                "face_set_name": "AreaFaces",
+                "min_area": 0.0,
+                "max_area": 10.0,
+            },
+            {
+                "operation_id": "expand_face_set",
+                "type": "EXPAND_FACE_SET",
+                "target_id": cube_id,
+                "face_set_name": "NormalFaces",
+                "iterations": 1,
+            },
+            {
+                "operation_id": "shrink_face_set",
+                "type": "SHRINK_FACE_SET",
+                "target_id": cube_id,
+                "face_set_name": "NormalFaces",
+                "iterations": 1,
+            },
+            {
+                "operation_id": "merge_face_sets",
+                "type": "MERGE_FACE_SETS",
+                "target_id": cube_id,
+                "source_face_set_names": ["NormalFaces", "AreaFaces"],
+                "merged_face_set_name": "MergedFaces",
+            },
+            {
+                "operation_id": "rename_face_set",
+                "type": "RENAME_FACE_SET",
+                "target_id": cube_id,
+                "face_set_name": "MergedFaces",
+                "new_face_set_name": "ReviewFaces",
+            },
+            {
+                "operation_id": "voxel_copy",
+                "type": "CREATE_VOXEL_REMESH_COPY",
+                "target_id": cube_id,
+                "name": "AdvancedVoxelCopy",
+                "voxel_size": 0.25,
+                "adaptivity": 0.0,
+                "preserve_volume": True,
+                "max_vertices": 80_000,
+                "max_polygons": 80_000,
+            },
+            {
+                "operation_id": "apply_voxel_copy",
+                "type": "APPLY_VOXEL_REMESH_TO_GENERATED_COPY",
+                "generated_object_id": "result:voxel_copy",
+                "voxel_size": 0.3,
+                "adaptivity": 0.0,
+                "preserve_volume": True,
+                "max_vertices": 80_000,
+                "max_polygons": 80_000,
+            },
+            {
+                "operation_id": "quad_prep_copy",
+                "type": "CREATE_QUAD_REMESH_PREP_COPY",
+                "target_id": cube_id,
+                "name": "AdvancedQuadPrepCopy",
+                "target_face_count": 1000,
+                "preserve_sharp_edges": True,
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "dyntopo_detail_copy",
+                "type": "CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY",
+                "target_id": cube_id,
+                "generated_name": "AdvancedDyntopoCopy",
+                "detail_level": 16.0,
+                "method": "relative_detail",
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "add_multires",
+                "type": "ADD_MULTIRES_MODIFIER",
+                "target_ids": [cube_id],
+                "name": "Advanced Multires",
+                "levels": 1,
+                "render_levels": 1,
+                "apply": False,
+            },
+            {
+                "operation_id": "subdivide_multires",
+                "type": "SUBDIVIDE_MULTIRES_MODIFIER",
+                "target_id": cube_id,
+                "modifier_name": "Advanced Multires",
+                "levels": 1,
+            },
+            {
+                "operation_id": "set_multires",
+                "type": "SET_MULTIRES_LEVELS",
+                "target_id": cube_id,
+                "modifier_name": "Advanced Multires",
+                "viewport_levels": 2,
+                "sculpt_levels": 2,
+                "render_levels": 2,
+            },
+            {
+                "operation_id": "multires_copy",
+                "type": "CREATE_MULTIRES_SCULPT_COPY",
+                "target_id": cube_id,
+                "generated_name": "AdvancedMultiresCopy",
+                "levels": 1,
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "multires_preview",
+                "type": "BAKE_MULTIRES_DISPLACEMENT_PREVIEW",
+                "target_id": cube_id,
+                "modifier_name": "Advanced Multires",
+                "image_name": "AdvancedMultiresPreview",
+                "width": 64,
+                "height": 64,
+                "color_space": "Non-Color",
+                "pack": True,
+            },
+            {
+                "operation_id": "accepted_variant",
+                "type": "CREATE_SCULPT_VARIANT_COPY",
+                "target_id": cube_id,
+                "variant_name": "AdvancedAcceptedVariant",
+                "variant_label": "Accepted sculpt variant",
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "tag_variant",
+                "type": "TAG_SCULPT_VARIANT",
+                "variant_id": "result:accepted_variant",
+                "label": "Review Candidate",
+                "prompt_summary": "Raised planes and cleaner silhouette.",
+            },
+            {
+                "operation_id": "variant_preview",
+                "type": "CREATE_SCULPT_COMPARISON_PREVIEW",
+                "target_id": cube_id,
+                "variant_id": "result:accepted_variant",
+                "preview_name": "AdvancedSculptPreview",
+                "width": 64,
+                "height": 64,
+                "mode": "material",
+                "pack": True,
+            },
+            {
+                "operation_id": "accept_variant",
+                "type": "ACCEPT_SCULPT_VARIANT",
+                "original_target_id": cube_id,
+                "variant_id": "result:accepted_variant",
+                "hide_original": False,
+                "preserve_original_data": True,
+            },
+            {
+                "operation_id": "rejected_variant",
+                "type": "CREATE_SCULPT_VARIANT_COPY",
+                "target_id": cube_id,
+                "variant_name": "AdvancedRejectedVariant",
+                "variant_label": "Rejected sculpt variant",
+                "preserve_original": True,
+            },
+            {
+                "operation_id": "reject_variant",
+                "type": "REJECT_SCULPT_VARIANT",
+                "variant_id": "result:rejected_variant",
+            },
+        ],
+    )
+    result = execute_plan(bpy.context, plan, snapshot)
+
+    assert result.completed_operations == len(plan.operations)
+    assert cube.data.attributes.get("NormalFaces") is not None
+    assert cube.data.attributes.get("AreaFaces") is not None
+    assert cube.data.attributes.get("ReviewFaces") is not None
+    assert data.objects["AdvancedVoxelCopy"].modifiers["AI Voxel Remesh"].type == "REMESH"
+    assert data.objects["AdvancedQuadPrepCopy"]["ai_target_face_count"] == 1000
+    assert data.objects["AdvancedDyntopoCopy"]["ai_generated_variant"] == (
+        "dynamic_topology_detail"
+    )
+    assert cube.modifiers["Advanced Multires"].levels == 2
+    assert data.objects["AdvancedMultiresCopy"].modifiers["AI Multires"].type == "MULTIRES"
+    assert data.images["AdvancedMultiresPreview"]["ai_preview_kind"] == (
+        "multires_displacement"
+    )
+    assert data.objects["AdvancedAcceptedVariant"]["ai_sculpt_variant_accepted"] is True
+    assert data.images["AdvancedSculptPreview"]["ai_preview_kind"] == "sculpt_comparison"
+    assert data.objects.get("AdvancedRejectedVariant") is None
+
+
 _run_shader_track_execution()
 _run_future_tracks_execution()
 _run_residual_features_execution()
 _run_advanced_shading_execution()
 _run_advanced_uv_execution()
+_run_advanced_sculpting_execution()
 print("Blender controlled execution tests: PASS")

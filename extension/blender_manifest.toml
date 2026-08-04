@@ -20,7 +20,7 @@ wheels = [
 ]
 
 [permissions]
-network = "Connect to the selected AI provider when planning a request"
+network = "Connect to AI providers and user-selected asset URLs"
 
 [build]
 paths_exclude_pattern = [

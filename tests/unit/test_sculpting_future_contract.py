@@ -7,10 +7,6 @@ from extension.operations import validate_operation_plan
 from extension.providers.instructions import SYSTEM_INSTRUCTIONS
 
 SNAPSHOT_ID = "a" * 32
-FUTURE_SCULPTING_XFAIL = pytest.mark.xfail(
-    reason="Future sculpting track is planned but not implemented yet.",
-    strict=True,
-)
 
 
 def ready_plan(*operations: Mapping[str, Any]) -> dict[str, Any]:
@@ -57,7 +53,6 @@ def advanced_brush_operation(brush_type: str) -> dict[str, Any]:
     }
 
 
-@FUTURE_SCULPTING_XFAIL
 @pytest.mark.parametrize(
     "brush_type",
     [
@@ -75,7 +70,6 @@ def test_track_a_expanded_sculpt_brushes_validate(brush_type: str) -> None:
     assert_future_plan_valid(advanced_brush_operation(brush_type))
 
 
-@FUTURE_SCULPTING_XFAIL
 def test_track_b_symmetric_sculpt_strokes_validate() -> None:
     assert_future_plan_valid(
         {
@@ -179,7 +173,6 @@ def face_set_operation(operation_type: str) -> dict[str, Any]:
     }
 
 
-@FUTURE_SCULPTING_XFAIL
 @pytest.mark.parametrize(
     "operation_type",
     [
@@ -195,7 +188,6 @@ def test_track_d_face_set_tools_validate(operation_type: str) -> None:
     assert_future_plan_valid(face_set_operation(operation_type))
 
 
-@FUTURE_SCULPTING_XFAIL
 def test_track_e_voxel_remesh_generated_copy_plan_validates() -> None:
     create_copy = {
         "operation_id": "create_voxel_copy",
@@ -222,7 +214,6 @@ def test_track_e_voxel_remesh_generated_copy_plan_validates() -> None:
     assert_future_plan_valid(create_copy, apply_to_copy)
 
 
-@FUTURE_SCULPTING_XFAIL
 @pytest.mark.parametrize(
     "operation",
     [
@@ -252,7 +243,6 @@ def test_track_e_remesh_preparation_operations_validate(
     assert_future_plan_valid(operation)
 
 
-@FUTURE_SCULPTING_XFAIL
 @pytest.mark.parametrize(
     "operation",
     [
@@ -310,7 +300,6 @@ def sculpt_variant_copy() -> dict[str, Any]:
     }
 
 
-@FUTURE_SCULPTING_XFAIL
 @pytest.mark.parametrize(
     "operation",
     [
@@ -353,7 +342,6 @@ def test_track_g_sculpt_variant_review_operations_validate(
     assert_future_plan_valid(sculpt_variant_copy(), operation)
 
 
-@FUTURE_SCULPTING_XFAIL
 def test_provider_instructions_describe_future_sculpting_tracks() -> None:
     expected_terms = (
         "APPLY_ADVANCED_SCULPT_BRUSH_STROKES",

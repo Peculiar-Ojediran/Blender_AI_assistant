@@ -228,6 +228,7 @@ VALID_OPERATIONS = [
         "location": [0.0, 0.0, 0.0],
         "rotation_euler": [0.0, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0],
+        "asset_metadata": None,
     },
     {
         "operation_id": "append_blend_object",
@@ -655,6 +656,11 @@ def test_import_asset_rejects_non_https_url_and_extension_mismatches() -> None:
     url_operation["filepath"] = "http://example.com/model.obj"
     with pytest.raises(OperationContractError, match="must use HTTPS"):
         validate_operation_plan(ready_plan(url_operation))
+
+    private_url_operation = deepcopy(VALID_OPERATIONS[18])
+    private_url_operation["filepath"] = "https://127.0.0.1/model.obj"
+    with pytest.raises(OperationContractError, match="private network"):
+        validate_operation_plan(ready_plan(private_url_operation))
 
     mismatch_operation = deepcopy(VALID_OPERATIONS[18])
     mismatch_operation["filepath"] = "C:\\assets\\test.fbx"

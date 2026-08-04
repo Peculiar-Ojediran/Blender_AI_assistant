@@ -6,9 +6,10 @@ from typing import Any, Literal
 from bpy.types import Panel
 
 from ..providers.openai import CUSTOM_MODEL_OPTION
-from ..providers.registry import PROVIDER_NVIDIA
+from ..providers.registry import PROVIDER_NVIDIA, provider_label
 from ..workflow.state import BUSY_STATUSES, PROMPT_EDITABLE_STATUSES, WorkflowStatus
-from .preferences import get_preferences, resolve_api_key
+from .asset_search import AssetSearchStatus, asset_search_panel_poll
+from .preferences import get_preferences, resolve_api_key, resolve_provider_choice
 from .properties import AIASSISTANT_PG_State
 
 STATUS_PRESENTATION: dict[WorkflowStatus, tuple[Any, str]] = {
@@ -37,6 +38,17 @@ HISTORY_ICONS: dict[str, Any] = {
     "rejected": "X",
     "failed": "CANCEL",
     "canceled": "CANCEL",
+}
+
+ASSET_SEARCH_STATUS_PRESENTATION: dict[str, tuple[Any, str]] = {
+    AssetSearchStatus.IDLE.value: ("URL", "Ready"),
+    AssetSearchStatus.SEARCHING.value: ("TIME", "Searching"),
+    AssetSearchStatus.SEARCH_FAILED.value: ("ERROR", "Search failed"),
+    AssetSearchStatus.RESULTS_READY.value: ("VIEWZOOM", "Results ready"),
+    AssetSearchStatus.INSPECTING.value: ("TIME", "Inspecting"),
+    AssetSearchStatus.INSPECTION_FAILED.value: ("ERROR", "Inspection failed"),
+    AssetSearchStatus.READY_TO_IMPORT.value: ("CHECKMARK", "Ready to import"),
+    AssetSearchStatus.HANDOFF_CREATED.value: ("CHECKMARK", "Import plan created"),
 }
 
 
@@ -127,6 +139,18 @@ class AIASSISTANT_PT_Assistant(AIASSISTANT_PT_Base):
         action_row = prompt_column.row(align=True)
         action_row.operator("blender_ai.plan_changes", icon="PLAY")
         action_row.operator("blender_ai.clear_prompt", text="", icon="X")
+
+        if preferences is not None and not bool(preferences.internet_discovery_enabled):
+            layout.separator()
+            disabled_row = layout.row(align=True)
+            disabled_row.label(text="Internet discovery disabled", icon="URL")
+            disabled_row.operator("blender_ai.open_preferences", text="", icon="PREFERENCES")
+        elif preferences is not None and preferences.provider_choice == PROVIDER_NVIDIA:
+            layout.separator()
+            layout.label(
+                text=f"Asset search unavailable for {provider_label(PROVIDER_NVIDIA)}",
+                icon="URL",
+            )
 
         if status in BUSY_STATUSES:
             progress = layout.column(align=True)
@@ -274,6 +298,129 @@ class AIASSISTANT_PT_Plan(AIASSISTANT_PT_Base):
         actions.operator("blender_ai.reject_plan", text="", icon="X")
 
 
+class AIASSISTANT_PT_asset_search(AIASSISTANT_PT_Base):
+    bl_idname = "AIASSISTANT_PT_asset_search"
+    bl_parent_id = "AIASSISTANT_PT_assistant"
+    bl_label = "Asset Search"
+    bl_options: set[Any] = {"DEFAULT_CLOSED"}  # noqa: RUF012
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        preferences = get_preferences(context)
+        if preferences is None:
+            return False
+        return asset_search_panel_poll(
+            internet_discovery_enabled=bool(preferences.internet_discovery_enabled),
+            provider_choice=resolve_provider_choice(preferences),
+        )
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        assert layout is not None
+        state = _state(context)
+        status_icon, status_label = ASSET_SEARCH_STATUS_PRESENTATION.get(
+            state.asset_search_status,
+            ("INFO", state.asset_search_status.replace("_", " ").title()),
+        )
+
+        status_row = layout.row(align=True)
+        status_row.label(text=status_label, icon=status_icon)
+
+        search_box = layout.column(align=True)
+        search_box.enabled = state.asset_search_status not in {
+            AssetSearchStatus.SEARCHING.value,
+            AssetSearchStatus.INSPECTING.value,
+        }
+        search_box.prop(state, "asset_search_query", text="")
+        search_box.prop(state, "asset_search_format", text="Format")
+        search_box.prop(state, "asset_search_max_results")
+        search_box.prop(state, "asset_search_direct_only")
+        action_row = search_box.row(align=True)
+        action_row.operator("blender_ai.search_assets", icon="VIEWZOOM")
+        action_row.operator("blender_ai.clear_asset_search", icon="X")
+
+        if state.asset_search_status in {
+            AssetSearchStatus.SEARCHING.value,
+            AssetSearchStatus.INSPECTING.value,
+        }:
+            layout.operator("blender_ai.cancel_asset_search", icon="CANCEL")
+
+        if state.asset_search_error_headline:
+            layout.separator()
+            _draw_wrapped(layout, state.asset_search_error_headline, icon="ERROR")
+            if state.asset_search_error_details:
+                _draw_wrapped(layout, state.asset_search_error_details)
+
+        if len(state.asset_candidates):
+            layout.separator()
+            layout.label(text="Candidates", icon="OUTLINER_OB_MESH")
+            for index, candidate in enumerate(state.asset_candidates):
+                self._draw_candidate(layout, candidate, index)
+
+        selected = state.selected_asset_candidate_index
+        if 0 <= selected < len(state.asset_candidates):
+            layout.separator()
+            self._draw_selected_candidate(layout, state.asset_candidates[selected])
+
+    @staticmethod
+    def _draw_candidate(layout: Any, candidate: Any, index: int) -> None:
+        if candidate.rejected:
+            return
+        row = layout.row(align=True)
+        toggle = row.operator(
+            "blender_ai.toggle_asset_candidate",
+            text="",
+            icon="TRIA_DOWN" if candidate.expanded else "TRIA_RIGHT",
+            emboss=False,
+        )
+        toggle.candidate_index = index
+        label = _compact(
+            f"{candidate.title} - {candidate.format_label} - {candidate.status_label}",
+            52,
+        )
+        row.label(text=label, icon="CHECKMARK" if candidate.import_ready else "NONE")
+
+        if not candidate.expanded:
+            return
+
+        details = layout.column(align=True)
+        details.label(text=f"Source: {candidate.source_host}")
+        details.label(text=f"License: {candidate.license_label}")
+        details.label(text=f"Confidence: {candidate.confidence_label}")
+        if candidate.size_label:
+            details.label(text=f"Size: {candidate.size_label}")
+        if candidate.warnings_text:
+            _draw_wrapped(details, candidate.warnings_text, icon="ERROR")
+
+        actions = layout.row(align=True)
+        select = actions.operator("blender_ai.select_asset_candidate", icon="RESTRICT_SELECT_OFF")
+        select.candidate_index = index
+        inspect = actions.operator("blender_ai.inspect_asset_candidate", icon="CHECKMARK")
+        inspect.candidate_index = index
+        source = actions.operator("blender_ai.open_asset_source", icon="URL")
+        source.candidate_index = index
+
+    @staticmethod
+    def _draw_selected_candidate(layout: Any, candidate: Any) -> None:
+        layout.label(text="Selected Candidate", icon="RESTRICT_SELECT_OFF")
+        _draw_wrapped(layout, f"Title: {candidate.title}")
+        if candidate.final_url:
+            _draw_wrapped(layout, f"Final URL: {candidate.final_url}")
+        elif candidate.direct_url:
+            _draw_wrapped(layout, f"Direct URL: {candidate.direct_url}")
+        if candidate.size_label:
+            layout.label(text=f"Size: {candidate.size_label}")
+        layout.label(text=f"License: {candidate.license_label}")
+        if candidate.attribution:
+            _draw_wrapped(layout, f"Attribution: {candidate.attribution}")
+
+        actions = layout.row(align=True)
+        import_action = actions.row(align=True)
+        import_action.enabled = bool(candidate.import_ready)
+        import_action.operator("blender_ai.create_asset_import_plan", icon="IMPORT")
+        actions.operator("blender_ai.reject_asset_candidate", icon="X")
+
+
 class AIASSISTANT_PT_Limits(AIASSISTANT_PT_Base):
     bl_idname = "AIASSISTANT_PT_limits"
     bl_parent_id = "AIASSISTANT_PT_assistant"
@@ -330,6 +477,7 @@ CLASSES = (
     AIASSISTANT_PT_Assistant,
     AIASSISTANT_PT_Context,
     AIASSISTANT_PT_Plan,
+    AIASSISTANT_PT_asset_search,
     AIASSISTANT_PT_Limits,
     AIASSISTANT_PT_History,
 )

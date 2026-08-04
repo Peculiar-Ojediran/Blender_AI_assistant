@@ -1884,6 +1884,726 @@ Not MVP:
 12. What undo guarantees can the extension honestly make?
 13. What makes this extension meaningfully different from BlenderMCP and Claude's official connector?
 
+## Controlled Internet Asset Discovery
+
+### Goal
+
+Add controlled internet access so a user can ask the extension to find an external model, texture,
+or reference asset, inspect candidate links, and import only an approved direct asset URL into
+Blender.
+
+This must not become arbitrary browsing, arbitrary file access, or arbitrary code execution. The AI
+may help discover candidates, but the extension keeps validation, download policy, import policy,
+user approval, and scene execution local.
+
+### Current Baseline
+
+- The extension can import a local or HTTPS `.obj`, `.fbx`, `.gltf`, or `.glb` through
+  `IMPORT_ASSET`.
+- URL imports reject non-HTTPS schemes, unsupported extensions, empty files, private/local network
+  targets, and files above the current 50 MB import cap.
+- The backend has Blender-independent internet discovery models, URL policy, URL inspection,
+  OpenAI web-search discovery, candidate review, and verified-candidate import handoff.
+- The Blender UI exposes search results, candidate inspection controls, and import selection through
+  the Asset Search panel.
+
+### Implementation Status
+
+Implemented backend pieces:
+
+- `extension/internet/models.py`
+- `extension/internet/policy.py`
+- `extension/internet/url_inspector.py`
+- `extension/internet/intent.py`
+- `extension/internet/search_provider.py`
+- `extension/internet/openai_search.py`
+- `extension/internet/review.py`
+- `extension/internet/asset_resolver.py`
+- `extension/internet/testing.py`
+- Shared private-network URL blocking in the regular `IMPORT_ASSET` validator and executor.
+- `IMPORT_ASSET.asset_metadata` for source, license, attribution, size, confidence, and warning
+  metadata.
+- Blender add-on preference gate for enabling internet asset discovery.
+
+Implemented UI pieces:
+
+- Search form in the 3D View sidebar.
+- Session-only candidate list state.
+- Candidate inspection command.
+- Candidate details view.
+- `Create Import Plan` handoff command.
+- Candidate-specific error and warning display.
+
+Still pending:
+
+- Live OpenAI web-search validation against real asset queries.
+- Local HTTP-server redirect and oversized-download tests beyond the mocked unit contracts.
+- Thumbnail previews, provider-neutral search selection, source filters, and persistent candidate
+  caches remain deferred UX.
+
+### Product Shape
+
+Use a two-stage workflow:
+
+1. Discovery stage:
+   - User asks for an asset, for example "find a male base mesh".
+   - The extension runs an explicit web search workflow.
+   - The result is a candidate list, not a scene-mutating operation plan.
+   - Each candidate includes source page, possible direct download URL, format, license, attribution,
+     confidence, and warnings.
+
+2. Import stage:
+   - User picks a candidate.
+   - The extension locally inspects the URL before importing.
+   - If the URL passes policy, the extension creates a normal `IMPORT_ASSET` plan.
+   - The user approves the plan through the existing high-risk approval flow.
+
+This separation matters because search results are uncertain. A search result can be a web page,
+license page, login-gated download, advertisement, expired link, or wrong file type. Import should
+only happen after a local verifier confirms a direct downloadable asset.
+
+### Provider Options
+
+#### Option A: OpenAI Web Search For Discovery
+
+Use OpenAI Responses API web search only for the discovery stage. The Responses API web search tool
+can retrieve current web information with citations.
+
+Advantages:
+
+- Reuses the user's existing OpenAI key.
+- Gives the AI model up-to-date search capability.
+- Can return citations that the UI can show beside candidates.
+- Fastest path for the OpenAI provider.
+
+Disadvantages:
+
+- Provider-specific; NVIDIA/custom providers will not automatically get the same behavior.
+- Search may still return pages rather than direct downloadable assets.
+- Search calls add latency and possible cost.
+- Structured-output planning and web search must stay separated to avoid weakening the normal
+  operation-plan schema.
+
+Recommended use:
+
+- Add a separate OpenAI discovery request path instead of mixing web search into every normal
+  planning request.
+- Keep normal scene-editing prompts on the existing schema-constrained operation planner.
+- Use web search only when the prompt clearly asks to find or search for an external asset, or when
+  the user presses a dedicated asset-search button.
+
+#### Option B: Dedicated Search API
+
+Use a provider-neutral search API for all AI providers, then ask the selected AI model to summarize
+and rank candidates.
+
+Advantages:
+
+- Works with OpenAI, NVIDIA, and future providers.
+- Search provider can be swapped independently from the AI model provider.
+- Easier to test with mocked search results.
+
+Disadvantages:
+
+- Adds another API key and provider dependency.
+- Web search APIs may not expose direct model download links.
+- Pricing, quotas, and allowed-use terms vary by provider.
+
+Recommended use:
+
+- Defer until after the OpenAI discovery prototype proves product value.
+
+#### Option C: Asset Platform Adapters
+
+Build direct adapters for sources such as Sketchfab-like marketplaces, public GitHub releases, or
+known free asset libraries.
+
+Advantages:
+
+- Best chance of getting license, author, format, file size, and direct download metadata.
+- Better UX than generic search.
+- Easier to respect source-specific terms.
+
+Disadvantages:
+
+- Every platform needs custom code.
+- Some sources require OAuth, API keys, or user accounts.
+- Terms of service may limit automated downloads.
+
+Recommended use:
+
+- Treat this as the long-term reliable path after the generic discovery workflow is proven.
+
+### MVP Policy
+
+Internet asset discovery is opt-in.
+
+Initial rules:
+
+- Internet discovery is disabled unless the user enables it in preferences.
+- No search or download happens silently from a normal scene-editing prompt.
+- The UI must show the source page and final direct download URL before import.
+- Every internet import remains high risk and requires approval.
+- The extension never sends API keys, local file paths, or private scene metadata to searched
+  websites.
+- No cookies, login sessions, browser profile data, or paid-account scraping.
+- No automatic download from user-generated web pages unless a direct URL passes inspection.
+
+URL inspection rules:
+
+- HTTPS only.
+- Reject localhost, loopback, private IP ranges, link-local IPs, and local network hosts.
+- Reject `file://`, `ftp://`, `http://`, and custom schemes.
+- Limit redirect count.
+- Re-validate every redirect target.
+- Require an allowed final extension for MVP: `.obj`, `.fbx`, `.gltf`, or `.glb`.
+- Enforce the 50 MB cap before and during streaming.
+- Reject empty files.
+- Store downloads in a temporary file and remove them after import.
+- Show file size, final host, redirects, and warnings in the preview.
+
+Licensing rules:
+
+- Prefer candidates with explicit free/commercial-use or permissive license metadata.
+- If license is unknown, show `License unknown` and require explicit user acknowledgement.
+- Preserve source page, author, license text/link, and attribution notes in imported object custom
+  properties when available.
+- Do not claim a model is safe for commercial use unless the source explicitly says so.
+
+### Architecture
+
+Internet discovery uses a separate boundary instead of expanding the operation executor directly:
+
+- `extension/internet/models.py`
+  - `AssetSearchRequest`
+  - `AssetCandidate`
+  - `LinkInspectionResult`
+  - `InternetAccessSettings`
+
+- `extension/internet/policy.py`
+  - allowed schemes
+  - allowed asset extensions
+  - file-size limits
+  - private-network rejection
+  - redirect policy
+  - license-warning policy
+
+- `extension/internet/url_inspector.py`
+  - validates URLs
+  - follows safe redirects
+  - checks headers and streamed size
+  - returns a non-mutating inspection result
+
+- `extension/internet/search_provider.py`
+  - provider-neutral interface for asset discovery
+  - mock provider for tests
+
+- `extension/internet/openai_search.py`
+  - OpenAI-specific discovery provider using Responses API web search
+  - returns candidate metadata and citations
+
+- `extension/internet/asset_resolver.py`
+  - converts search results into inspectable candidate links
+  - flags listing pages that are not direct downloads
+
+- `extension/ui/asset_search.py`
+  - search form state
+  - candidate rows
+  - candidate selection
+  - candidate inspection updates
+  - import-plan creation
+
+- `extension/ui/asset_search_runtime.py`
+  - background search/inspection runtime
+  - cancellation
+  - stale result filtering
+  - timer polling
+
+- Existing `extension/operations/executor.py`
+  - reuses the internet URL policy for asset import preflight
+  - applies asset metadata to imported objects
+
+### User Flow
+
+Example prompt:
+
+```text
+Find a free male base mesh in GLB format and import it at the origin.
+```
+
+Expected behavior:
+
+1. Extension detects this is an internet asset discovery request, or the user opens Asset Search.
+2. User explicitly starts search.
+3. Search returns candidates with source links and license warnings.
+4. Extension inspects candidate direct URLs.
+5. UI marks each candidate as:
+   - Ready to import
+   - Needs manual download
+   - Wrong format
+   - Too large
+   - License unknown
+   - Blocked by policy
+6. User selects one ready candidate.
+7. Extension generates an `IMPORT_ASSET` plan.
+8. User approves the high-risk import.
+9. Existing executor imports the file and records attribution metadata.
+
+### Implementation Tracks
+
+#### Track A: Settings And UX Gate
+
+- Add an `Internet Asset Discovery` preference.
+- Add source/cost warning text.
+- Add a dedicated search button or mode in the Assistant panel.
+- Make discovery status visible: searching, inspecting, blocked, ready, imported.
+- Backend settings, prompt-intent classification, and the Blender add-on preference gate are
+  implemented.
+
+#### Track B: URL Inspection Core
+
+- Build and test a local URL inspector before adding search.
+- Cover HTTPS validation, redirects, size limits, empty files, extension mismatch, and
+  private-network blocking.
+- Refactor existing import download code to share the same policy where practical.
+- Implemented for the backend and regular `IMPORT_ASSET` preflight.
+
+#### Track C: Candidate Data Model
+
+- Define candidate and inspection dataclasses.
+- Include source page URL, direct URL, format, size, license, attribution, confidence, and warnings.
+- Keep candidate objects separate from scene operation plans.
+- Implemented without preview image URL; that field remains deferred until the UI can display it.
+
+#### Track D: OpenAI Discovery Provider
+
+- Add a separate OpenAI discovery request path using web search.
+- Request candidate metadata, citations, and direct download links when available.
+- Require local validation to treat all returned URLs as untrusted.
+- If structured output and web search conflict in practice, split discovery into two calls:
+  search/citations first, then candidate normalization second.
+- Implemented as a separate provider path using the Responses API `web_search` tool and a strict
+  asset-candidate JSON schema.
+
+#### Track E: Candidate Review UI
+
+- Show candidates in a compact list.
+- Include source page, final URL, file type, size, license, and warnings.
+- Add buttons for inspect, open source page, and import selected candidate.
+- Do not auto-import hidden candidates.
+- Blender UI rendering, buttons, async search/inspection polling, and import-plan handoff are
+  implemented.
+
+#### Track F: Import Handoff
+
+- Convert a verified candidate into a normal `IMPORT_ASSET` operation.
+- Preserve existing approval, risk, rollback, and operation preview behavior.
+- Store attribution metadata on imported objects where possible.
+- Implemented for verified candidates. Imported objects receive `ai_asset_*` custom properties when
+  metadata is provided.
+
+#### Track G: Tests
+
+- Unit tests for URL policy and candidate models.
+- Mocked OpenAI discovery tests with no live network dependency.
+- Candidate review screen tests for UI state and import handoff.
+- Blender smoke tests for the panel and default session state.
+- Optional live internet test kept separate and skipped by default.
+- Active internet access contract tests live in
+  `tests/unit/test_internet_access_future_contract.py`.
+
+### Main Challenges
+
+- Direct model links are uncommon. Many model sites provide listing pages, zipped downloads,
+  account-gated downloads, or JavaScript-generated URLs.
+- Licensing is hard to verify automatically. The UI must avoid overstating rights.
+- Search results can be wrong, stale, unsafe, or hallucinated.
+- Some useful assets exceed the current 50 MB cap.
+- Downloaded model files can be malformed or heavy enough to freeze Blender import.
+- Public internet access creates SSRF risk unless private networks are explicitly blocked.
+- Web search adds latency and cost.
+- Provider support will differ: OpenAI can use hosted web search, while NVIDIA may need a separate
+  search provider.
+
+### Deferred Features
+
+- ZIP download and safe archive unpacking.
+- Login-based asset downloads.
+- OAuth integrations with asset platforms.
+- Marketplace-specific adapters.
+- Automatic retopology or cleanup after import.
+- Virus scanning or sandboxed model parsing.
+- Automatic commercial-license verification.
+- Background download queue.
+- Asset cache with reuse and cleanup controls.
+
+### Acceptance Criteria
+
+The first useful version is complete when:
+
+- A user can search for an external asset from Blender.
+- Search results appear as candidates rather than automatic scene changes.
+- At least one verified direct `.obj`, `.fbx`, `.gltf`, or `.glb` URL can be imported through the
+  existing approval flow.
+- Bad links, non-HTTPS links, oversized files, private-network links, and listing pages fail with
+  clear user-facing reasons.
+- Source URL and license/attribution metadata are visible before import.
+- All non-live tests pass without internet access.
+
+## Candidate Search And Review Screen
+
+### Goal
+
+Add a Blender-native screen for finding online asset candidates, inspecting direct download URLs,
+reviewing licensing and safety warnings, and handing one verified candidate into the existing
+`IMPORT_ASSET` approval flow.
+
+The screen must not import automatically. It should make internet discovery visible, reversible at
+the workflow level, and separate from normal scene-editing planning.
+
+### Screen Placement
+
+Add a collapsible child panel under the existing `AIASSISTANT_PT_assistant` panel:
+
+```text
+AIASSISTANT_PT_asset_search
+Label: Asset Search
+Parent: AIASSISTANT_PT_assistant
+Default: collapsed
+```
+
+The panel should appear only when:
+
+- Add-on preferences are available.
+- `Internet Asset Discovery` is enabled.
+- The selected provider can support asset discovery, initially OpenAI.
+
+When internet discovery is disabled, the Assistant panel may show a compact disabled row:
+
+```text
+[globe icon] Internet discovery disabled     [Open Settings]
+```
+
+Do not show candidate controls when discovery is disabled.
+
+### Main User Flow
+
+1. User opens the `Asset Search` child panel.
+2. User enters a search query, for example:
+
+   ```text
+   free male base mesh glb
+   ```
+
+3. User optionally chooses:
+   - desired format: Any, OBJ, FBX, GLTF, GLB
+   - maximum results
+   - direct-download-only preference
+4. User presses `Search`.
+5. Extension runs discovery in a background worker.
+6. UI shows candidates with title, format, status, source host, license label, confidence, and warning
+   icon when needed.
+7. User expands a candidate row to view:
+   - source page URL
+   - direct download URL, if found
+   - citations
+   - license/attribution
+   - warnings
+   - inspection result
+8. User presses `Inspect URL` for a candidate with a direct URL.
+9. Extension locally verifies the URL.
+10. If inspection passes, candidate status becomes `Ready to import`.
+11. User presses `Create Import Plan`.
+12. Extension converts the candidate into an `IMPORT_ASSET` operation and shows the normal plan
+    preview.
+13. User approves through the existing high-risk `Apply Plan` flow.
+
+### Panel Layout
+
+```text
+Asset Search
+[status icon] Ready
+
+[ search query................................ ]
+Format: [ Any | OBJ | FBX | GLTF | GLB ]
+Results: [ 5 ]
+[ Search ] [ Clear ]
+
+Candidates
+> Male Base Mesh                         GLB  Ready to inspect
+  Source: assets.example.com
+  License: CC0
+  Confidence: 91%
+  [ Inspect URL ] [ Open Source ]
+
+v Low Poly Character Base                Unknown  Needs manual download
+  Source: marketplace.example.com
+  License: Unknown
+  Warning: No direct download URL found.
+  [ Open Source ]
+
+Selected Candidate
+Title: Male Base Mesh
+Final URL: https://cdn.example.com/base-mesh.glb
+Size: 2.0 KB
+License: CC0
+Attribution: Example Artist
+[ Create Import Plan ] [ Reject Candidate ]
+```
+
+Use Blender-native controls. Avoid custom web views or embedded browser surfaces.
+
+### UI State Model
+
+Add asset-search state separate from the existing plan state:
+
+- `asset_search_status`
+  - `idle`
+  - `searching`
+  - `search_failed`
+  - `results_ready`
+  - `inspecting`
+  - `inspection_failed`
+  - `ready_to_import`
+  - `handoff_created`
+- `asset_search_query`
+- `asset_search_format`
+- `asset_search_max_results`
+- `asset_search_direct_only`
+- `asset_search_error_headline`
+- `asset_search_error_details`
+- `asset_candidates`
+- `selected_asset_candidate_index`
+
+Candidate item properties:
+
+- title
+- source page URL
+- direct URL
+- final URL
+- source host
+- format
+- size bytes
+- license label
+- license URL
+- attribution
+- confidence
+- status label
+- warnings
+- citations
+- expanded flag
+- inspected flag
+- import-ready flag
+
+Keep candidate state session-only. Do not persist search results in Blender preferences.
+
+### Operators
+
+Dedicated operators:
+
+- `blender_ai.search_assets`
+  - validates opt-in setting and API key
+  - starts background OpenAI asset discovery
+  - never mutates the scene
+
+- `blender_ai.cancel_asset_search`
+  - cancels active discovery/inspection worker
+
+- `blender_ai.clear_asset_search`
+  - clears query, candidates, and search errors
+
+- `blender_ai.toggle_asset_candidate`
+  - expands/collapses one candidate row
+
+- `blender_ai.select_asset_candidate`
+  - marks a candidate as selected for inspection/import
+
+- `blender_ai.inspect_asset_candidate`
+  - runs local URL inspection for the selected candidate
+  - updates final URL, file size, redirect/warning state
+
+- `blender_ai.open_asset_source`
+  - opens the source page in the user's browser
+  - does not download anything
+
+- `blender_ai.create_asset_import_plan`
+  - converts a verified candidate into an `IMPORT_ASSET` plan
+  - stores the plan in the existing pending-planning result path
+
+- `blender_ai.reject_asset_candidate`
+  - clears the selected candidate without clearing the whole search result list
+
+### Async Runtime
+
+Discovery and URL inspection run off Blender's main thread.
+
+The implementation uses `extension/ui/asset_search_runtime.py` as a separate asset-search runtime.
+It keeps planning results and search results independent, which avoids accidentally invalidating an
+approved scene-edit plan when the user searches for an asset.
+
+The Blender timer polls both runtimes:
+
+- planning runtime for operation plans
+- asset-search runtime for candidate discovery and URL inspection
+
+### Handoff To Import Plan
+
+The screen does not directly call the executor.
+
+Instead:
+
+1. Build a one-operation `ready` plan:
+
+   ```json
+   {
+     "status": "ready",
+     "intent_summary": "Import verified internet asset Male Base Mesh.",
+     "assumptions": [
+       "The user selected this asset candidate from internet discovery."
+     ],
+     "questions": [],
+     "operations": [
+       {
+         "type": "IMPORT_ASSET",
+         "filepath": "https://cdn.example.com/base-mesh.glb",
+         "format": "glb",
+         "collection_id": null,
+         "name_prefix": "MaleBase",
+         "location": [0.0, 0.0, 0.0],
+         "rotation_euler": [0.0, 0.0, 0.0],
+         "scale": [1.0, 1.0, 1.0],
+         "asset_metadata": {
+           "title": "Male Base Mesh",
+           "source_page_url": "https://assets.example.com/base-mesh",
+           "direct_url": "https://cdn.example.com/base-mesh.glb",
+           "final_url": "https://cdn.example.com/base-mesh.glb",
+           "license_label": "CC0",
+           "license_url": "https://assets.example.com/license",
+           "attribution": "Example Artist",
+           "size_bytes": 2048,
+           "confidence": 0.91,
+           "warnings": []
+         }
+       }
+     ]
+   }
+   ```
+
+2. Validate it with the normal operation contract.
+3. Resolve scene targets, even though the first version has no object targets.
+4. Show it in the existing Plan panel.
+5. Require high-risk confirmation before execution.
+
+### Error States
+
+Search errors:
+
+- missing API key
+- internet discovery disabled
+- selected provider does not support discovery
+- OpenAI web-search request failed
+- invalid discovery JSON
+- no candidates found
+
+Inspection errors:
+
+- no direct URL
+- non-HTTPS URL
+- unsupported extension
+- private-network or localhost target
+- redirect target blocked
+- too many redirects
+- oversized file
+- empty file
+- network timeout
+- HTTP error
+
+Import-handoff errors:
+
+- candidate not inspected
+- candidate not import-ready
+- license unknown and not acknowledged
+- operation schema validation failed
+
+All errors should preserve the search query and candidate list unless the user clears them.
+
+### Safety Requirements
+
+- Discovery must be disabled by default.
+- Search requires the user to press an explicit command.
+- Candidate import requires URL inspection first.
+- Inspection does not save or import the file.
+- Import handoff uses the existing `IMPORT_ASSET` path.
+- The full plan preview remains mandatory.
+- High-risk confirmation remains mandatory.
+- API keys are never shown in candidate details or history.
+- Search results and citations are untrusted until local validation passes.
+
+### Testing Plan
+
+Tests cover:
+
+- default asset-search state
+- clearing search state
+- candidate source/license/inspection fields
+- blocked search when internet discovery is disabled
+- blocked search without an OpenAI API key
+- background search start
+- cancellation
+- blocked inspection without selection
+- blocked import for listing-only candidates
+- stale async result filtering
+- search and inspection failure states
+- successful inspection readiness
+- verified candidate `IMPORT_ASSET` handoff
+- asset metadata in the generated plan
+- Plan panel handoff
+- high-risk approval preservation
+- Blender panel registration
+- enabled/disabled preference behavior
+
+Live OpenAI asset search should remain skipped by default and run only with an explicit live-test
+flag.
+
+Active contract tests live in
+`tests/unit/test_candidate_search_review_screen_future_contract.py`.
+
+### Implementation Order
+
+1. Added UI property groups for search state and candidate rows.
+2. Added candidate rendering helpers in `extension/ui/asset_search.py`.
+3. Added the asset-search panel to `extension/ui/panels.py`.
+4. Added search, clear, select, expand, inspect, open-source, and import-handoff operators.
+5. Added a separate asset-search runtime and poll it from the UI registration path.
+6. Added import-plan handoff into the existing approval preview.
+7. Added tests for disabled-state, mocked search, mocked inspection, and handoff.
+8. Verified with full Python tests, Ruff, Mypy, Blender registration tests, and Blender execution
+   tests.
+
+### Deferred UX
+
+- Thumbnail previews.
+- Provider-neutral search API selection.
+- Platform-specific source filters.
+- Asset source favorites.
+- Persistent local candidate cache.
+- Batch import from multiple selected candidates.
+- ZIP extraction.
+- Automatic retopology or cleanup suggestions after import.
+
+### Acceptance Criteria
+
+The screen is ready when:
+
+- A user can enable internet discovery in preferences and see the Asset Search panel.
+- A user can search without freezing Blender.
+- Candidate rows show source, format, license, confidence, and warnings.
+- Listing-only candidates cannot be imported.
+- Direct URL candidates must pass inspection before import.
+- Verified candidates can create a normal `IMPORT_ASSET` plan.
+- The existing Plan panel and high-risk approval flow remain the only path to scene mutation.
+- All non-live tests pass without internet access.
+
 ## Recommended First Milestone
 
 Build a non-public prototype that can reliably do this:
@@ -1924,3 +2644,5 @@ If those simple tasks are dependable, the project is on solid ground. If they ar
 - 3D-Agent Blender AI page: https://3d-agent.com/blender-ai
 - OpenAI current model guidance: https://developers.openai.com/api/docs/guides/latest-model.md
 - OpenAI Structured Outputs guide: https://developers.openai.com/api/docs/guides/structured-outputs
+- OpenAI web search guide: https://developers.openai.com/api/docs/guides/tools-web-search
+- OpenAI tools guide: https://developers.openai.com/api/docs/guides/tools

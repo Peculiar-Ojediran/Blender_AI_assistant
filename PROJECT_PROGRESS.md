@@ -905,3 +905,84 @@ Add new entries in chronological order, with the earliest entry at the top and t
 - Updated the Blender extension manifest, installation docs, troubleshooting docs, development release commands, release-check script, and archive verifier for version 1.5.0.
 - Rebuilt `dist/blender_ai_assistant-1.5.0.zip` from the current extension source.
 - Verification: full Python test suite passed with 255 passed, 10 skipped, and 27 expected failures; Ruff passed; Mypy passed across 45 source files; Blender controlled execution tests passed; Blender archive validation passed; independent archive verification passed at 627,869 bytes.
+
+## Controlled Internet Access Planning Started
+
+- Added `INTERNET_ACCESS_PLAN.md` for opt-in web asset discovery, URL inspection, candidate review, import handoff, licensing metadata, and testing strategy.
+- Updated `AI_BLENDER_EXTENSION_PLAN.md` to link internet access to the existing controlled-operation workflow instead of adding unrestricted browsing or arbitrary downloads.
+- Kept this as documentation-only planning; no operation code, provider code, UI code, tests, or release package were changed.
+
+## Controlled Internet Access Test Scaffolding Added
+
+- Added strict expected-failure TDD contract tests for internet asset discovery Tracks A-G in `tests/unit/test_internet_access_future_contract.py`.
+- Covered planned behavior for opt-in settings, discovery intent routing, safe URL policy, direct HTTPS URL inspection, candidate license/attribution metadata, OpenAI web-search discovery payloads, candidate review, import handoff, and non-live test coverage.
+- Updated `INTERNET_ACCESS_PLAN.md` and `TEST_MATRIX.md` to reference the new test scaffold.
+- Kept the tests marked `xfail(strict=True)` so the current suite remains green until the internet access implementation is added.
+- Verification: focused internet access future tests reported 16 expected failures; Ruff passed for the new test file; full Python test suite passed with 255 passed, 10 skipped, and 43 expected failures.
+
+## Controlled Internet Access Backend Implemented
+
+- Implemented `extension.internet` backend modules for opt-in settings, discovery intent classification, URL policy, URL inspection, provider-neutral search, OpenAI web-search discovery, candidate review, verified-candidate import handoff, and non-live test-surface declarations.
+- Added a Blender add-on preference gate for internet asset discovery while leaving full candidate-list UI controls as the next implementation step.
+- Updated regular `IMPORT_ASSET` validation and executor preflight to reject localhost, loopback, private-network, non-HTTPS, and unsupported-extension URLs through the shared internet policy.
+- Added nullable `asset_metadata` to `IMPORT_ASSET` and executor support for writing discovered asset source, license, attribution, size, confidence, and warning data onto imported objects as `ai_asset_*` custom properties.
+- Promoted `tests/unit/test_internet_access_future_contract.py` from strict expected-failure scaffolding to active validation.
+- Updated `INTERNET_ACCESS_PLAN.md`, `CONTROLLED_OPERATIONS.md`, `SAFETY.md`, `PROVIDER_INTEGRATION.md`, and `TEST_MATRIX.md` for the implemented backend and remaining UI/live-test gaps.
+- Verification: internet access plus operation-contract tests passed with 97 passed; full Python test suite passed with 271 passed, 10 skipped, and 27 expected failures; Ruff passed; Mypy passed across 55 source files; Blender controlled execution tests passed; Blender dependency smoke test passed with a post-test unregister warning from the installed user extension.
+
+## Candidate Search And Review Screen Planning Added
+
+- Added `CANDIDATE_SEARCH_REVIEW_SCREEN_PLAN.md` for the Blender asset-search panel placement, user flow, layout, UI state model, operators, async runtime, import handoff, error states, safety requirements, test plan, implementation order, deferred UX, and acceptance criteria.
+- Updated `INTERNET_ACCESS_PLAN.md` and `UX_DESIGN.md` to reference the dedicated candidate-search screen plan.
+- Kept this as documentation-only planning; no UI code, operators, runtime code, tests, or release package were changed.
+
+## Candidate Search And Review Screen Test Scaffolding Added
+
+- Added strict expected-failure TDD contract tests for the planned candidate search/review screen in `tests/unit/test_candidate_search_review_screen_future_contract.py`.
+- Covered planned screen state, clearing behavior, candidate row fields, preference/provider panel gating, request view-model creation, operator IDs, child-panel registration, stale async result handling, search error preservation, inspection updates, listing-only import blocking, verified import-plan handoff, and future screen test-surface registry.
+- Updated `CANDIDATE_SEARCH_REVIEW_SCREEN_PLAN.md` and `TEST_MATRIX.md` to reference the new UI test scaffold.
+- Kept the tests marked `xfail(strict=True)` so the current suite remains green until the candidate search/review screen is implemented.
+- Verification: focused candidate search/review screen tests reported 13 expected failures; Ruff passed for the new test file; full Python test suite passed with 271 passed, 10 skipped, and 40 expected failures.
+
+## Candidate Search And Review Screen Implemented
+
+- Implemented Blender-independent asset search screen state helpers, candidate row conversion, discovery result reducers, inspection result reducers, selection/rejection helpers, search request building, and verified-candidate import-plan creation.
+- Added a dedicated asset-search background runtime for OpenAI discovery and URL inspection, including stale-generation filtering and Blender timer polling.
+- Added session-only Blender candidate properties, an `Asset Search` child panel, and operators for search, cancel, clear, expand, select, inspect URL, open source, create import plan, and reject candidate.
+- Wired verified candidates into the existing validated planning result path so imports still use the normal Plan panel and high-risk approval flow.
+- Promoted the candidate search/review screen tests from strict expected failures to active tests and added Blender smoke assertions for the new panel, operators, and session defaults.
+- Updated `AI_BLENDER_EXTENSION_PLAN.md`, `INTERNET_ACCESS_PLAN.md`, `CANDIDATE_SEARCH_REVIEW_SCREEN_PLAN.md`, `UX_DESIGN.md`, and `TEST_MATRIX.md` for the implemented screen.
+- Verification: full Python test suite passed with 284 passed, 10 skipped, and 27 expected failures; Ruff passed; Mypy passed across 58 source files; Blender dependency smoke test passed; Blender controlled execution tests passed.
+- Updated the Blender manifest network permission description and rebuilt `dist/blender_ai_assistant-1.5.0.zip`.
+- Release verification: Blender source validation passed; Blender ZIP validation passed; independent archive verification passed at 650,937 bytes.
+
+## Advanced Sculpting Tracks Implemented
+
+- Promoted the planned sculpting Tracks A-G tests from strict expected failures to active tests.
+- Added controlled operations for advanced sculpt brushes, mirrored brush replay, face-set creation/editing, voxel/quad/dyntopo generated-copy workflows, Multires level/preview workflows, and sculpt variant review.
+- Updated operation schemas, catalog risk metadata, semantic validation, result-reference kind checks, target resolution, risk accounting, provider instructions, and Blender execution handlers for the new operations.
+- Added Blender controlled execution coverage for the advanced sculpting workflow.
+- Updated `AI_BLENDER_EXTENSION_PLAN.md`, `CONTROLLED_OPERATIONS.md`, and `TEST_MATRIX.md` for the implemented sculpting surface.
+- Verification: focused sculpting contract tests passed with 34 passed; operation contract tests passed with 81 passed; full Python suite passed with 311 passed and 10 skipped; Ruff passed; Mypy passed across 83 source and test files; Blender dependency smoke test passed; Blender controlled execution tests passed.
+- Rebuilt and validated `dist/blender_ai_assistant-1.5.0.zip`; independent archive verification passed at 660,131 bytes.
+
+## Pending Commit Change Audit
+
+- Reviewed the current uncommitted source and test changes after the documentation revert.
+- Pending internet-access work includes the new `extension.internet` package for opt-in asset discovery, URL policy, URL inspection, OpenAI web-search discovery, candidate review, verified import-operation handoff, and non-live test-surface tracking.
+- Pending candidate-search UI work includes session-only candidate state, asset-search screen helpers, a background search/inspection runtime, panel registration, search/cancel/clear/select/inspect/open-source/import-plan/reject operators, and a normal Plan-panel handoff for verified `IMPORT_ASSET` candidates.
+- Pending import safety work includes shared policy validation for URL asset imports and `IMPORT_ASSET.asset_metadata` support so imported objects can keep source, license, attribution, size, confidence, and warning metadata.
+- Pending advanced sculpting work includes controlled operations for advanced and symmetric brush strokes, face-set creation/editing, voxel remesh copies, quad-remesh prep copies, dynamic-topology detail copies, Multires level/preview workflows, sculpt variant review, and accept/reject flows.
+- Pending operation contract work updates enums, schemas, catalog risk entries, registries, semantic validation, result-reference kind checks, target resolution, risk accounting, provider instructions, executor simulation, and Blender execution handlers.
+- Pending tests include active internet access contracts, active candidate search/review contracts, Blender UI smoke coverage for the asset-search panel/defaults, expanded operation contract assertions, and a Blender execution scenario for the advanced sculpting workflow.
+- `INTERNET_ACCESS_PLAN.md` and `CANDIDATE_SEARCH_REVIEW_SCREEN_PLAN.md` remain untracked documentation files that describe the new internet and candidate-review workflows.
+- Verification: audit/documentation update only in this pass; no tests were rerun.
+
+## Internet And Candidate Plans Merged
+
+- Merged `INTERNET_ACCESS_PLAN.md` and `CANDIDATE_SEARCH_REVIEW_SCREEN_PLAN.md` into `AI_BLENDER_EXTENSION_PLAN.md`.
+- Preserved the internet discovery goal, policy rules, provider options, architecture, user flow, implementation tracks, risks, deferred work, and acceptance criteria.
+- Preserved the candidate search/review goal, screen placement, UI state model, operators, async runtime, import-plan handoff, error states, safety requirements, testing plan, implementation order, deferred UX, and acceptance criteria.
+- Added OpenAI web-search and tools references to the main plan research source list.
+- Removed the standalone internet and candidate-review plan files so the main Blender extension plan is the single planning document for those features.
+- Verification: documentation-only merge; no source tests were rerun.

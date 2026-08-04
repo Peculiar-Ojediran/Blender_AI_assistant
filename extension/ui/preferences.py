@@ -6,6 +6,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, St
 from bpy.types import AddonPreferences
 
 from ..config import environment_value_source, resolve_environment_value
+from ..internet import InternetAccessSettings
 from ..operations import (
     DEFAULT_OPERATION_LIMITS,
     HARD_MAX_DUPLICATE_OBJECTS,
@@ -62,6 +63,7 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         max_plan_operations: int
         max_operation_targets: int
         max_duplicate_objects: int
+        internet_discovery_enabled: bool
     else:
         provider_choice: EnumProperty(
             name="Provider",
@@ -172,6 +174,11 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
             min=1,
             max=HARD_MAX_DUPLICATE_OBJECTS,
         )
+        internet_discovery_enabled: BoolProperty(
+            name="Internet Asset Discovery",
+            description="Allow explicit web searches for external model or texture candidates",
+            default=InternetAccessSettings().discovery_enabled,
+        )
 
     def draw(self, context: Any) -> None:
         layout = self.layout
@@ -221,6 +228,11 @@ class AIASSISTANT_AP_preferences(AddonPreferences):
         safety.label(text="Schema validation: Required")
         safety.label(text="Scene validation: Required")
         safety.label(text="Arbitrary Python: Disabled")
+
+        internet = layout.column(align=True)
+        internet.label(text="Internet", icon="URL")
+        internet.prop(self, "internet_discovery_enabled")
+        internet.label(text="Discovery is non-mutating until import approval")
 
     @property
     def nvidia_model_choice_is_custom(self) -> bool:
@@ -281,6 +293,14 @@ def resolve_operation_limits(
         max_targets_per_operation=preferences.max_operation_targets,
         max_duplicate_objects=preferences.max_duplicate_objects,
     )
+
+
+def resolve_internet_access_settings(
+    preferences: AIASSISTANT_AP_preferences | None,
+) -> InternetAccessSettings:
+    if preferences is None:
+        return InternetAccessSettings()
+    return InternetAccessSettings(discovery_enabled=preferences.internet_discovery_enabled)
 
 
 def api_key_source(preferences: AIASSISTANT_AP_preferences | None) -> str:

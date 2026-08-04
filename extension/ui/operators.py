@@ -1,10 +1,12 @@
 """Blender commands for the assistant UX."""
 
+import webbrowser
+from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import bpy
-from bpy.props import BoolProperty
+from bpy.props import BoolProperty, IntProperty
 from bpy.types import Operator
 
 from ..context import (
@@ -15,6 +17,8 @@ from ..context import (
     read_scene_context,
     serialize_scene_context,
 )
+from ..internet.openai_search import OpenAIAssetDiscoveryProvider
+from ..internet.policy import InternetDownloadPolicy
 from ..operations import (
     ExecutionPreflightError,
     ExecutionResult,
@@ -28,7 +32,7 @@ from ..providers.openai import (
     DEFAULT_REASONING_EFFORT,
     DEFAULT_TIMEOUT_SECONDS,
 )
-from ..providers.registry import provider_label
+from ..providers.registry import PROVIDER_OPENAI, provider_label
 from ..safety import (
     SafetyConfirmationRequired,
     SafetyPolicyError,
@@ -37,10 +41,29 @@ from ..safety import (
 )
 from ..workflow import PlanningConversation
 from ..workflow.state import BUSY_STATUSES, WorkflowStatus
+from .asset_search import (
+    AssetSearchScreenError,
+    AssetSearchStatus,
+    asset_candidate_from_row,
+    build_asset_search_request_from_state,
+    build_import_plan_from_selection,
+    clear_asset_search_state,
+    inspection_result_from_row,
+    reject_asset_candidate,
+    select_asset_candidate,
+    selected_asset_candidate_row,
+    toggle_asset_candidate_expanded,
+)
+from .asset_search_runtime import (
+    cancel_asset_search_job,
+    start_asset_inspection_job,
+    start_asset_search_job,
+)
 from .planning import (
     cancel_planning_job,
     clear_planning_result,
     pending_planning_result,
+    retain_local_plan_result,
     start_planning_job,
 )
 from .preferences import (
@@ -661,6 +684,320 @@ class AIASSISTANT_OT_new_request(Operator):
         return {"FINISHED"}
 
 
+def _candidate_index_from_operator(operator: Any, state: AIASSISTANT_PG_State) -> int:
+    candidate_index = int(operator.candidate_index)
+    if candidate_index >= 0:
+        return candidate_index
+    return int(state.selected_asset_candidate_index)
+
+
+def _set_asset_screen_error(
+    state: AIASSISTANT_PG_State,
+    *,
+    headline: str,
+    details: str,
+    status: AssetSearchStatus,
+) -> None:
+    state.asset_search_status = status.value
+    state.asset_search_error_headline = headline
+    state.asset_search_error_details = details[:4096]
+
+
+def _clear_asset_screen_error(state: AIASSISTANT_PG_State) -> None:
+    state.asset_search_error_headline = ""
+    state.asset_search_error_details = ""
+
+
+def _asset_operation_id(title: str) -> str:
+    suffix = "".join(
+        character if character.isalnum() else "_"
+        for character in title.strip().lower()
+    )
+    suffix = "_".join(part for part in suffix.split("_") if part)
+    return f"import_{suffix or 'asset'}"[:64]
+
+
+def _asset_name_prefix(title: str) -> str:
+    prefix = "".join(character for character in title.title() if character.isalnum())
+    return prefix[:48] or "ImportedAsset"
+
+
+class AIASSISTANT_OT_search_assets(Operator):
+    bl_idname = "blender_ai.search_assets"
+    bl_label = "Search"
+    bl_description = "Search for online asset candidates without changing the scene"
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        state = _state(context)
+        return state.asset_search_status not in {
+            AssetSearchStatus.SEARCHING.value,
+            AssetSearchStatus.INSPECTING.value,
+        }
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        preferences = get_preferences(context)
+        if preferences is None or not bool(preferences.internet_discovery_enabled):
+            _set_asset_screen_error(
+                state,
+                headline="Internet discovery is disabled",
+                details="Enable Internet Asset Discovery in the add-on preferences.",
+                status=AssetSearchStatus.SEARCH_FAILED,
+            )
+            self.report({"WARNING"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+        if resolve_provider_choice(preferences) != PROVIDER_OPENAI:
+            _set_asset_screen_error(
+                state,
+                headline="Asset search requires OpenAI",
+                details="The current candidate discovery screen uses OpenAI web search.",
+                status=AssetSearchStatus.SEARCH_FAILED,
+            )
+            self.report({"WARNING"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+        api_key = resolve_api_key(context)
+        if not api_key:
+            _set_asset_screen_error(
+                state,
+                headline="OpenAI API key required",
+                details="Configure an OpenAI API key before searching for online assets.",
+                status=AssetSearchStatus.SEARCH_FAILED,
+            )
+            self.report({"WARNING"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+
+        try:
+            request = build_asset_search_request_from_state(state)
+            provider = OpenAIAssetDiscoveryProvider(
+                api_key,
+                timeout_seconds=preferences.request_timeout,
+            )
+            start_asset_search_job(provider=provider, request=request)
+        except Exception as error:
+            _set_asset_screen_error(
+                state,
+                headline="Could not start asset search",
+                details=str(error) or type(error).__name__,
+                status=AssetSearchStatus.SEARCH_FAILED,
+            )
+            self.report({"ERROR"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+
+        state.asset_search_status = AssetSearchStatus.SEARCHING.value
+        _clear_asset_screen_error(state)
+        state.asset_candidates.clear()
+        state.selected_asset_candidate_index = -1
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_cancel_asset_search(Operator):
+    bl_idname = "blender_ai.cancel_asset_search"
+    bl_label = "Cancel"
+    bl_description = "Cancel the active asset search or URL inspection"
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        with suppress(RuntimeError):
+            cancel_asset_search_job()
+        state.asset_search_status = (
+            AssetSearchStatus.RESULTS_READY.value
+            if len(state.asset_candidates)
+            else AssetSearchStatus.IDLE.value
+        )
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_clear_asset_search(Operator):
+    bl_idname = "blender_ai.clear_asset_search"
+    bl_label = "Clear"
+    bl_description = "Clear the asset search query, candidates, and errors"
+
+    def execute(self, context: Any) -> OperatorResult:
+        clear_asset_search_state(_state(context))
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_toggle_asset_candidate(Operator):
+    bl_idname = "blender_ai.toggle_asset_candidate"
+    bl_label = "Toggle Candidate"
+    bl_description = "Expand or collapse one asset candidate"
+
+    if TYPE_CHECKING:
+        candidate_index: int
+    else:
+        candidate_index: IntProperty(name="Candidate", default=-1, options={"HIDDEN"})
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        try:
+            toggle_asset_candidate_expanded(state, self.candidate_index)
+        except AssetSearchScreenError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_select_asset_candidate(Operator):
+    bl_idname = "blender_ai.select_asset_candidate"
+    bl_label = "Select"
+    bl_description = "Select an asset candidate for inspection or import handoff"
+
+    if TYPE_CHECKING:
+        candidate_index: int
+    else:
+        candidate_index: IntProperty(name="Candidate", default=-1, options={"HIDDEN"})
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        try:
+            select_asset_candidate(state, self.candidate_index)
+        except AssetSearchScreenError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_inspect_asset_candidate(Operator):
+    bl_idname = "blender_ai.inspect_asset_candidate"
+    bl_label = "Inspect URL"
+    bl_description = "Inspect the selected candidate's direct download URL"
+
+    if TYPE_CHECKING:
+        candidate_index: int
+    else:
+        candidate_index: IntProperty(name="Candidate", default=-1, options={"HIDDEN"})
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        candidate_index = _candidate_index_from_operator(self, state)
+        try:
+            select_asset_candidate(state, candidate_index)
+            row = selected_asset_candidate_row(state)
+        except AssetSearchScreenError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+
+        if not row.direct_url:
+            _set_asset_screen_error(
+                state,
+                headline="Candidate has no direct URL",
+                details="Only direct HTTPS model URLs can be inspected for import.",
+                status=AssetSearchStatus.INSPECTION_FAILED,
+            )
+            self.report({"WARNING"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+
+        try:
+            start_asset_inspection_job(
+                candidate_index=candidate_index,
+                direct_url=row.direct_url,
+                policy=InternetDownloadPolicy(),
+            )
+        except Exception as error:
+            _set_asset_screen_error(
+                state,
+                headline="Could not start URL inspection",
+                details=str(error) or type(error).__name__,
+                status=AssetSearchStatus.INSPECTION_FAILED,
+            )
+            self.report({"ERROR"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+
+        state.asset_search_status = AssetSearchStatus.INSPECTING.value
+        _clear_asset_screen_error(state)
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_open_asset_source(Operator):
+    bl_idname = "blender_ai.open_asset_source"
+    bl_label = "Open Source"
+    bl_description = "Open the candidate source page in the default browser"
+
+    if TYPE_CHECKING:
+        candidate_index: int
+    else:
+        candidate_index: IntProperty(name="Candidate", default=-1, options={"HIDDEN"})
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        candidate_index = _candidate_index_from_operator(self, state)
+        try:
+            select_asset_candidate(state, candidate_index)
+            row = selected_asset_candidate_row(state)
+        except AssetSearchScreenError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        if not row.source_page_url:
+            self.report({"WARNING"}, "The selected candidate has no source page.")
+            return {"CANCELLED"}
+        webbrowser.open(row.source_page_url)
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_create_asset_import_plan(Operator):
+    bl_idname = "blender_ai.create_asset_import_plan"
+    bl_label = "Create Import Plan"
+    bl_description = "Create a reviewed IMPORT_ASSET plan from the selected candidate"
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        try:
+            row = selected_asset_candidate_row(state)
+            candidate = asset_candidate_from_row(row)
+            inspection = inspection_result_from_row(row)
+            snapshot, _serialized = _collect_context(context, state)
+            plan = build_import_plan_from_selection(
+                candidate=candidate,
+                inspection=inspection,
+                snapshot_id=snapshot.snapshot_id,
+                operation_id=_asset_operation_id(candidate.title),
+                name_prefix=_asset_name_prefix(candidate.title),
+            )
+            prompt = f"Import verified internet asset {candidate.title}."
+            clear_provider_usage(state)
+            retain_local_plan_result(
+                state,
+                snapshot=snapshot,
+                plan=plan,
+                prompt=prompt,
+            )
+        except Exception as error:
+            _set_asset_screen_error(
+                state,
+                headline="Could not create import plan",
+                details=str(error) or type(error).__name__,
+                status=AssetSearchStatus.INSPECTION_FAILED,
+            )
+            self.report({"ERROR"}, state.asset_search_error_headline)
+            return {"CANCELLED"}
+
+        state.submitted_prompt = prompt
+        state.asset_search_status = AssetSearchStatus.HANDOFF_CREATED.value
+        _clear_asset_screen_error(state)
+        return {"FINISHED"}
+
+
+class AIASSISTANT_OT_reject_asset_candidate(Operator):
+    bl_idname = "blender_ai.reject_asset_candidate"
+    bl_label = "Reject Candidate"
+    bl_description = "Reject the selected asset candidate without clearing search results"
+
+    if TYPE_CHECKING:
+        candidate_index: int
+    else:
+        candidate_index: IntProperty(name="Candidate", default=-1, options={"HIDDEN"})
+
+    def execute(self, context: Any) -> OperatorResult:
+        state = _state(context)
+        try:
+            reject_asset_candidate(state, _candidate_index_from_operator(self, state))
+        except AssetSearchScreenError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 CLASSES = (
     AIASSISTANT_OT_open_preferences,
     AIASSISTANT_OT_clear_session_key,
@@ -674,4 +1011,13 @@ CLASSES = (
     AIASSISTANT_OT_apply_plan,
     AIASSISTANT_OT_dismiss_error,
     AIASSISTANT_OT_new_request,
+    AIASSISTANT_OT_search_assets,
+    AIASSISTANT_OT_cancel_asset_search,
+    AIASSISTANT_OT_clear_asset_search,
+    AIASSISTANT_OT_toggle_asset_candidate,
+    AIASSISTANT_OT_select_asset_candidate,
+    AIASSISTANT_OT_inspect_asset_candidate,
+    AIASSISTANT_OT_open_asset_source,
+    AIASSISTANT_OT_create_asset_import_plan,
+    AIASSISTANT_OT_reject_asset_candidate,
 )

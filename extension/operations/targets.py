@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from ..context.identity import target_state_fingerprint
 from ..context.models import SceneContextSnapshot, TargetKind, TargetReference
-from .models import Operation, OperationPlan
+from .models import Operation, OperationPlan, OperationType
 
 RESULT_REFERENCE_PREFIX = "result:"
 
@@ -136,10 +136,31 @@ def _operation_references(operation: Operation) -> tuple[tuple[str, TargetKind],
     if isinstance(material_id, str):
         references.append((material_id, TargetKind.MATERIAL))
 
-    for key in ("source_material_id", "replace_material_id", "canonical_material_id", "variant_id"):
+    for key in ("source_material_id", "replace_material_id", "canonical_material_id"):
         referenced_material_id = operation.payload.get(key)
         if isinstance(referenced_material_id, str):
             references.append((referenced_material_id, TargetKind.MATERIAL))
+
+    variant_id = operation.payload.get("variant_id")
+    if isinstance(variant_id, str):
+        if operation.type in {
+            OperationType.TAG_SCULPT_VARIANT,
+            OperationType.CREATE_SCULPT_COMPARISON_PREVIEW,
+            OperationType.ACCEPT_SCULPT_VARIANT,
+            OperationType.REJECT_SCULPT_VARIANT,
+        }:
+            references.append((variant_id, TargetKind.OBJECT))
+        elif operation.type not in {
+            OperationType.TAG_UV_VARIANT,
+            OperationType.CREATE_UV_COMPARISON_PREVIEW,
+            OperationType.ACCEPT_UV_VARIANT,
+            OperationType.REJECT_UV_VARIANT,
+        }:
+            references.append((variant_id, TargetKind.MATERIAL))
+
+    original_target_id = operation.payload.get("original_target_id")
+    if isinstance(original_target_id, str):
+        references.append((original_target_id, TargetKind.OBJECT))
 
     material_ids = operation.payload.get("material_ids")
     if isinstance(material_ids, tuple):

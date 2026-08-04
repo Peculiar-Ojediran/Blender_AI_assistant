@@ -304,7 +304,11 @@ extension.register()
 
 assert hasattr(bpy.types.WindowManager, "blender_ai_state")
 assert hasattr(bpy.types, "AIASSISTANT_PT_assistant")
+assert hasattr(bpy.types, "AIASSISTANT_PT_asset_search")
 assert hasattr(bpy.types, "BLENDER_AI_OT_plan_changes")
+assert hasattr(bpy.types, "BLENDER_AI_OT_search_assets")
+assert hasattr(bpy.types, "BLENDER_AI_OT_inspect_asset_candidate")
+assert hasattr(bpy.types, "BLENDER_AI_OT_create_asset_import_plan")
 provider_property: Any = AIASSISTANT_AP_preferences.bl_rna.properties["provider_choice"]
 provider_identifiers = {item.identifier for item in provider_property.enum_items}
 assert provider_identifiers == {identifier for identifier, _label, _description in PROVIDER_ITEMS}
@@ -357,6 +361,10 @@ blender_ai_ops: Any = cast(Any, bpy.ops).blender_ai
 assert ui_state.workflow_status == "idle"
 assert ui_state.context_scope == "SELECTION"
 assert not bool(ui_state.has_plan)
+assert ui_state.asset_search_status == "idle"
+assert ui_state.asset_search_format == "ANY"
+assert ui_state.asset_search_max_results == 5
+assert len(ui_state.asset_candidates) == 0
 assert AIASSISTANT_OT_plan_changes.poll(bpy.context)
 ui_state.workflow_status = "planning"
 assert not AIASSISTANT_OT_plan_changes.poll(bpy.context)

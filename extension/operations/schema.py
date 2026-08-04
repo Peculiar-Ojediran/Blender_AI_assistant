@@ -6,6 +6,8 @@ from .limits import DEFAULT_OPERATION_LIMITS, OperationLimits
 from .models import OperationType, PlanStatus
 from .registries import (
     ADVANCED_PROCEDURAL_PATTERNS,
+    ADVANCED_SCULPT_BRUSH_TYPES,
+    DYNAMIC_TOPOLOGY_DETAIL_METHODS,
     GENERATED_MESH_VARIANTS,
     GENERATED_TEXTURE_PATTERNS,
     GEOMETRY_NODE_GROUP_TEMPLATES,
@@ -18,7 +20,10 @@ from .registries import (
     PROCEDURAL_NODE_SET_MAPPINGS,
     PROCEDURAL_PATTERNS,
     RENDER_PREVIEW_MODES,
+    SCULPT_BRUSH_FALLOFFS,
     SCULPT_REGION_OPERATIONS,
+    SCULPT_SYMMETRY_AXES,
+    SCULPT_SYMMETRY_ORIGINS,
     SHADER_GRAPH_TEMPLATES,
     SHADER_LAYER_BLEND_MODES,
     SHADER_LAYER_MASK_KINDS,
@@ -146,6 +151,33 @@ def _file_path() -> dict[str, Any]:
 
 def _asset_source() -> dict[str, Any]:
     return {"type": "string", "minLength": 1, "maxLength": MAX_FILE_PATH_LENGTH}
+
+
+def _asset_metadata() -> dict[str, Any]:
+    metadata_properties = {
+        "title": _nullable({"type": "string", "maxLength": MAX_STRING_LENGTH}),
+        "source_page_url": _nullable({"type": "string", "maxLength": MAX_FILE_PATH_LENGTH}),
+        "direct_url": _nullable({"type": "string", "maxLength": MAX_FILE_PATH_LENGTH}),
+        "final_url": _nullable({"type": "string", "maxLength": MAX_FILE_PATH_LENGTH}),
+        "license_label": _nullable({"type": "string", "maxLength": MAX_STRING_LENGTH}),
+        "license_url": _nullable({"type": "string", "maxLength": MAX_FILE_PATH_LENGTH}),
+        "attribution": _nullable({"type": "string", "maxLength": MAX_STRING_LENGTH}),
+        "size_bytes": _nullable({"type": "integer", "minimum": 0, "maximum": 50 * 1024 * 1024}),
+        "confidence": _nullable(_bounded_number(0.0, 1.0)),
+        "warnings": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": MAX_STRING_LENGTH},
+            "maxItems": 10,
+        },
+    }
+    return _nullable(
+        {
+            "type": "object",
+            "properties": metadata_properties,
+            "required": list(metadata_properties),
+            "additionalProperties": False,
+        }
+    )
 
 
 def _node_reference() -> dict[str, Any]:
@@ -340,6 +372,71 @@ def _sculpt_mask_edit_properties() -> dict[str, Any]:
         "mask_name": _name(),
         "iterations": {"type": "integer", "minimum": 1, "maximum": 50},
         "strength": _bounded_number(0.0, 1.0),
+    }
+
+
+def _sculpt_brush_stroke(*, include_direction: bool) -> dict[str, Any]:
+    properties = {
+        "location": _vector(3, -1_000_000.0, 1_000_000.0),
+        "normal": _vector(3, -1.0, 1.0),
+        "pressure": _bounded_number(0.0, 1.0),
+    }
+    if include_direction:
+        properties["direction"] = _vector(3, -1.0, 1.0)
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
+def _advanced_sculpt_brush_properties() -> dict[str, Any]:
+    return {
+        "target_id": _reference("obj"),
+        "brush_type": {
+            "type": "string",
+            "enum": list(ADVANCED_SCULPT_BRUSH_TYPES),
+        },
+        "radius": _bounded_number(0.001, 1_000.0),
+        "strength": _bounded_number(0.0, 1.0),
+        "falloff": {"type": "string", "enum": list(SCULPT_BRUSH_FALLOFFS)},
+        "strokes": {
+            "type": "array",
+            "items": _sculpt_brush_stroke(include_direction=True),
+            "minItems": 1,
+            "maxItems": MESH_PROCESSING_LIMITS["sculpt_stroke_max_count"],
+        },
+        "region_id": _nullable(_result_reference()),
+        "mask_id": _nullable(_result_reference()),
+        "preserve_original": {"type": "boolean", "enum": [True]},
+    }
+
+
+def _symmetry_origin() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": list(SCULPT_SYMMETRY_ORIGINS)},
+            "location": _nullable(_vector(3, -1_000_000.0, 1_000_000.0)),
+        },
+        "required": ["kind", "location"],
+        "additionalProperties": False,
+    }
+
+
+def _mesh_processing_limit_properties() -> dict[str, Any]:
+    return {
+        "max_vertices": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MESH_PROCESSING_LIMITS["generated_mesh_max_vertices"],
+        },
+        "max_polygons": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MESH_PROCESSING_LIMITS["generated_mesh_max_polygons"],
+        },
     }
 
 
@@ -666,6 +763,7 @@ def build_operation_schemas(
                 "location": _vector(3, -1_000_000.0, 1_000_000.0),
                 "rotation_euler": _vector(3, -1_000_000.0, 1_000_000.0),
                 "scale": _vector(3, -10_000.0, 10_000.0),
+                "asset_metadata": _asset_metadata(),
             },
         ),
         OperationType.LINK_OR_APPEND_BLEND_DATA: _operation_schema(
@@ -1849,6 +1947,30 @@ def build_operation_schemas(
                 },
             },
         ),
+        OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES: _operation_schema(
+            OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES,
+            _advanced_sculpt_brush_properties(),
+        ),
+        OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES: _operation_schema(
+            OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES,
+            {
+                key: value
+                for key, value in {
+                    **_advanced_sculpt_brush_properties(),
+                    "mirror_axes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": list(SCULPT_SYMMETRY_AXES),
+                        },
+                        "minItems": 1,
+                        "maxItems": len(SCULPT_SYMMETRY_AXES),
+                    },
+                    "symmetry_origin": _symmetry_origin(),
+                }.items()
+                if key != "preserve_original"
+            },
+        ),
         OperationType.CREATE_GEOMETRY_NODES_PRESET: _operation_schema(
             OperationType.CREATE_GEOMETRY_NODES_PRESET,
             {
@@ -1949,6 +2071,54 @@ def build_operation_schemas(
                 "preserve_original": {"type": "boolean", "enum": [True]},
             },
         ),
+        OperationType.CREATE_VOXEL_REMESH_COPY: _operation_schema(
+            OperationType.CREATE_VOXEL_REMESH_COPY,
+            {
+                "target_id": _reference("obj"),
+                "name": _name(),
+                "voxel_size": _bounded_number(0.001, 1_000.0),
+                "adaptivity": _bounded_number(0.0, 1.0),
+                "preserve_volume": {"type": "boolean"},
+                **_mesh_processing_limit_properties(),
+            },
+        ),
+        OperationType.APPLY_VOXEL_REMESH_TO_GENERATED_COPY: _operation_schema(
+            OperationType.APPLY_VOXEL_REMESH_TO_GENERATED_COPY,
+            {
+                "generated_object_id": _reference("obj"),
+                "voxel_size": _bounded_number(0.001, 1_000.0),
+                "adaptivity": _bounded_number(0.0, 1.0),
+                "preserve_volume": {"type": "boolean"},
+                **_mesh_processing_limit_properties(),
+            },
+        ),
+        OperationType.CREATE_QUAD_REMESH_PREP_COPY: _operation_schema(
+            OperationType.CREATE_QUAD_REMESH_PREP_COPY,
+            {
+                "target_id": _reference("obj"),
+                "name": _name(),
+                "target_face_count": {
+                    "type": "integer",
+                    "minimum": 4,
+                    "maximum": MESH_PROCESSING_LIMITS["generated_mesh_max_polygons"],
+                },
+                "preserve_sharp_edges": {"type": "boolean"},
+                "preserve_original": {"type": "boolean", "enum": [True]},
+            },
+        ),
+        OperationType.CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY: _operation_schema(
+            OperationType.CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY,
+            {
+                "target_id": _reference("obj"),
+                "generated_name": _name(),
+                "detail_level": _bounded_number(1.0, 100.0),
+                "method": {
+                    "type": "string",
+                    "enum": list(DYNAMIC_TOPOLOGY_DETAIL_METHODS),
+                },
+                "preserve_original": {"type": "boolean", "enum": [True]},
+            },
+        ),
         OperationType.REPLACE_OBJECT_WITH_GENERATED_COPY: _operation_schema(
             OperationType.REPLACE_OBJECT_WITH_GENERATED_COPY,
             {
@@ -2043,6 +2213,61 @@ def build_operation_schemas(
                 "face_set_name": _name(),
             },
         ),
+        OperationType.CREATE_FACE_SET_FROM_NORMAL_ANGLE: _operation_schema(
+            OperationType.CREATE_FACE_SET_FROM_NORMAL_ANGLE,
+            {
+                "target_id": _reference("obj"),
+                "face_set_name": _name(),
+                "seed_face_index": {"type": "integer", "minimum": 0, "maximum": 1_000_000},
+                "angle_degrees": _bounded_number(0.0, 180.0),
+            },
+        ),
+        OperationType.CREATE_FACE_SET_FROM_POLYGON_AREA: _operation_schema(
+            OperationType.CREATE_FACE_SET_FROM_POLYGON_AREA,
+            {
+                "target_id": _reference("obj"),
+                "face_set_name": _name(),
+                "min_area": _bounded_number(0.0, 1_000_000.0),
+                "max_area": _bounded_number(0.0, 1_000_000.0),
+            },
+        ),
+        OperationType.EXPAND_FACE_SET: _operation_schema(
+            OperationType.EXPAND_FACE_SET,
+            {
+                "target_id": _reference("obj"),
+                "face_set_name": _name(),
+                "iterations": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        ),
+        OperationType.SHRINK_FACE_SET: _operation_schema(
+            OperationType.SHRINK_FACE_SET,
+            {
+                "target_id": _reference("obj"),
+                "face_set_name": _name(),
+                "iterations": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        ),
+        OperationType.MERGE_FACE_SETS: _operation_schema(
+            OperationType.MERGE_FACE_SETS,
+            {
+                "target_id": _reference("obj"),
+                "source_face_set_names": {
+                    "type": "array",
+                    "items": _name(),
+                    "minItems": 2,
+                    "maxItems": 16,
+                },
+                "merged_face_set_name": _name(),
+            },
+        ),
+        OperationType.RENAME_FACE_SET: _operation_schema(
+            OperationType.RENAME_FACE_SET,
+            {
+                "target_id": _reference("obj"),
+                "face_set_name": _name(),
+                "new_face_set_name": _name(),
+            },
+        ),
         OperationType.APPLY_SCULPT_REGION_OPERATION: _operation_schema(
             OperationType.APPLY_SCULPT_REGION_OPERATION,
             {
@@ -2060,6 +2285,93 @@ def build_operation_schemas(
                 "levels": {"type": "integer", "minimum": 0, "maximum": 6},
                 "render_levels": {"type": "integer", "minimum": 0, "maximum": 6},
                 "apply": {"type": "boolean", "enum": [False]},
+            },
+        ),
+        OperationType.SUBDIVIDE_MULTIRES_MODIFIER: _operation_schema(
+            OperationType.SUBDIVIDE_MULTIRES_MODIFIER,
+            {
+                "target_id": _reference("obj"),
+                "modifier_name": _name(),
+                "levels": {"type": "integer", "minimum": 1, "maximum": 6},
+            },
+        ),
+        OperationType.SET_MULTIRES_LEVELS: _operation_schema(
+            OperationType.SET_MULTIRES_LEVELS,
+            {
+                "target_id": _reference("obj"),
+                "modifier_name": _name(),
+                "viewport_levels": {"type": "integer", "minimum": 0, "maximum": 6},
+                "sculpt_levels": {"type": "integer", "minimum": 0, "maximum": 6},
+                "render_levels": {"type": "integer", "minimum": 0, "maximum": 6},
+            },
+        ),
+        OperationType.CREATE_MULTIRES_SCULPT_COPY: _operation_schema(
+            OperationType.CREATE_MULTIRES_SCULPT_COPY,
+            {
+                "target_id": _reference("obj"),
+                "generated_name": _name(),
+                "levels": {"type": "integer", "minimum": 1, "maximum": 6},
+                "preserve_original": {"type": "boolean", "enum": [True]},
+            },
+        ),
+        OperationType.BAKE_MULTIRES_DISPLACEMENT_PREVIEW: _operation_schema(
+            OperationType.BAKE_MULTIRES_DISPLACEMENT_PREVIEW,
+            {
+                "target_id": _reference("obj"),
+                "modifier_name": _name(),
+                "image_name": _name(),
+                "width": _preview_dimension(),
+                "height": _preview_dimension(),
+                "color_space": _color_space(),
+                "pack": {"type": "boolean"},
+            },
+        ),
+        OperationType.CREATE_SCULPT_VARIANT_COPY: _operation_schema(
+            OperationType.CREATE_SCULPT_VARIANT_COPY,
+            {
+                "target_id": _reference("obj"),
+                "variant_name": _name(),
+                "variant_label": _name(),
+                "preserve_original": {"type": "boolean", "enum": [True]},
+            },
+        ),
+        OperationType.TAG_SCULPT_VARIANT: _operation_schema(
+            OperationType.TAG_SCULPT_VARIANT,
+            {
+                "variant_id": _reference("obj"),
+                "label": _name(),
+                "prompt_summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+            },
+        ),
+        OperationType.CREATE_SCULPT_COMPARISON_PREVIEW: _operation_schema(
+            OperationType.CREATE_SCULPT_COMPARISON_PREVIEW,
+            {
+                "target_id": _reference("obj"),
+                "variant_id": _reference("obj"),
+                "preview_name": _name(),
+                "width": _preview_dimension(),
+                "height": _preview_dimension(),
+                "mode": {"type": "string", "enum": list(RENDER_PREVIEW_MODES)},
+                "pack": {"type": "boolean"},
+            },
+        ),
+        OperationType.ACCEPT_SCULPT_VARIANT: _operation_schema(
+            OperationType.ACCEPT_SCULPT_VARIANT,
+            {
+                "original_target_id": _reference("obj", allow_result=False),
+                "variant_id": _reference("obj"),
+                "hide_original": {"type": "boolean"},
+                "preserve_original_data": {"type": "boolean", "enum": [True]},
+            },
+        ),
+        OperationType.REJECT_SCULPT_VARIANT: _operation_schema(
+            OperationType.REJECT_SCULPT_VARIANT,
+            {
+                "variant_id": _reference("obj"),
             },
         ),
         OperationType.CREATE_SHAPE_KEY: _operation_schema(

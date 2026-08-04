@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlparse
 
 import fastjsonschema
 
+from ..internet.policy import InternetDownloadPolicy, InternetPolicyError, validate_asset_url
 from .limits import DEFAULT_OPERATION_LIMITS, OperationLimits
 from .models import Operation, OperationPlan, OperationType, PlanStatus
 from .registries import (
@@ -106,12 +107,22 @@ _RESULT_KINDS = {
     OperationType.CREATE_DISPLACED_COPY: "object",
     OperationType.CREATE_REMESHED_COPY: "object",
     OperationType.CREATE_DYNAMIC_TOPOLOGY_COPY: "object",
+    OperationType.CREATE_VOXEL_REMESH_COPY: "object",
+    OperationType.CREATE_QUAD_REMESH_PREP_COPY: "object",
+    OperationType.CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY: "object",
+    OperationType.CREATE_MULTIRES_SCULPT_COPY: "object",
+    OperationType.CREATE_SCULPT_VARIANT_COPY: "object",
     OperationType.CREATE_SCULPT_REGION_FROM_MATERIAL: "sculpt_region",
     OperationType.CREATE_SCULPT_REGION_FROM_VERTEX_GROUP: "sculpt_region",
     OperationType.CREATE_SCULPT_MASK: "sculpt_mask",
     OperationType.COMBINE_SCULPT_MASKS: "sculpt_mask",
     OperationType.CREATE_FACE_SET_FROM_MATERIAL: "face_set",
     OperationType.CREATE_FACE_SET_FROM_VERTEX_GROUP: "face_set",
+    OperationType.CREATE_FACE_SET_FROM_NORMAL_ANGLE: "face_set",
+    OperationType.CREATE_FACE_SET_FROM_POLYGON_AREA: "face_set",
+    OperationType.MERGE_FACE_SETS: "face_set",
+    OperationType.BAKE_MULTIRES_DISPLACEMENT_PREVIEW: "image",
+    OperationType.CREATE_SCULPT_COMPARISON_PREVIEW: "image",
     OperationType.CREATE_PREVIEW_IMAGE: "image",
     OperationType.CREATE_RENDER_PREVIEW_IMAGE: "image",
 }
@@ -123,6 +134,12 @@ _UV_VARIANT_REFERENCE_OPERATIONS = {
     OperationType.CREATE_UV_COMPARISON_PREVIEW,
     OperationType.ACCEPT_UV_VARIANT,
     OperationType.REJECT_UV_VARIANT,
+}
+_SCULPT_VARIANT_REFERENCE_OPERATIONS = {
+    OperationType.TAG_SCULPT_VARIANT,
+    OperationType.CREATE_SCULPT_COMPARISON_PREVIEW,
+    OperationType.ACCEPT_SCULPT_VARIANT,
+    OperationType.REJECT_SCULPT_VARIANT,
 }
 _UV_BOUNDS_FIELD_PAIRS = (
     ("bounds_min", "bounds_max"),
@@ -296,10 +313,14 @@ def _schema_error_hint(data: Mapping[str, Any]) -> str | None:
             and operation.get("input_name") not in SHADER_SOCKET_NAMES
         ):
             return "SET_SHADER_NODE_VALUE input_name socket is not supported."
-        if raw_type == OperationType.APPLY_SCULPT_BRUSH_STROKES.value:
+        if raw_type in {
+            OperationType.APPLY_SCULPT_BRUSH_STROKES.value,
+            OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES.value,
+            OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES.value,
+        }:
             strokes = operation.get("strokes")
             if isinstance(strokes, list) and len(strokes) > 500:
-                return "APPLY_SCULPT_BRUSH_STROKES stroke count cannot exceed 500."
+                return f"{raw_type} stroke count cannot exceed 500."
     return None
 
 
@@ -498,6 +519,46 @@ def _validate_operation_semantics(
         if operation_type is OperationType.APPLY_SCULPT_BRUSH_STROKES:
             _validate_sculpt_strokes(operation["strokes"])
 
+        if operation_type in {
+            OperationType.APPLY_ADVANCED_SCULPT_BRUSH_STROKES,
+            OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES,
+        }:
+            _validate_sculpt_strokes(
+                operation["strokes"],
+                operation_type=operation_type.value,
+                require_direction=True,
+            )
+
+        if operation_type is OperationType.APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES:
+            _validate_sculpt_symmetry(operation)
+
+        if (
+            operation_type is OperationType.CREATE_FACE_SET_FROM_POLYGON_AREA
+            and float(operation["min_area"]) > float(operation["max_area"])
+        ):
+            raise OperationContractError(
+                "CREATE_FACE_SET_FROM_POLYGON_AREA min_area must not exceed max_area."
+            )
+
+        if operation_type is OperationType.MERGE_FACE_SETS:
+            _validate_face_set_merge(operation)
+
+        if (
+            operation_type is OperationType.RENAME_FACE_SET
+            and str(operation["face_set_name"]) == str(operation["new_face_set_name"])
+        ):
+            raise OperationContractError(
+                "RENAME_FACE_SET new_face_set_name must differ from face_set_name."
+            )
+
+        if (
+            operation_type is OperationType.ACCEPT_SCULPT_VARIANT
+            and operation["original_target_id"] == operation["variant_id"]
+        ):
+            raise OperationContractError(
+                "ACCEPT_SCULPT_VARIANT original_target_id and variant_id must differ."
+            )
+
         if operation_type is OperationType.COMBINE_SCULPT_MASKS:
             _validate_sculpt_mask_combine(operation)
 
@@ -665,12 +726,17 @@ def _validate_result_references(
 
     variant_id = operation.get("variant_id")
     if isinstance(variant_id, str):
-        expected_variant_kind = (
-            "uv_variant"
-            if operation_type in _UV_VARIANT_REFERENCE_OPERATIONS
-            else "material"
-        )
+        if operation_type in _UV_VARIANT_REFERENCE_OPERATIONS:
+            expected_variant_kind = "uv_variant"
+        elif operation_type in _SCULPT_VARIANT_REFERENCE_OPERATIONS:
+            expected_variant_kind = "object"
+        else:
+            expected_variant_kind = "material"
         references.append((variant_id, expected_variant_kind))
+
+    original_target_id = operation.get("original_target_id")
+    if isinstance(original_target_id, str):
+        references.append((original_target_id, "object"))
 
     material_ids = operation.get("material_ids")
     if isinstance(material_ids, list):
@@ -773,6 +839,10 @@ def _validate_result_references(
     if isinstance(region_id, str):
         references.append((region_id, "sculpt_region"))
 
+    mask_id = operation.get("mask_id")
+    if isinstance(mask_id, str):
+        references.append((mask_id, "sculpt_mask"))
+
     for reference, expected_kind in references:
         if not reference.startswith(RESULT_REFERENCE_PREFIX):
             continue
@@ -796,8 +866,15 @@ def _validate_file_extension(
     normalized = filepath.lower()
     is_url = "://" in normalized
     if operation_type == "IMPORT_ASSET":
-        if is_url and not normalized.startswith("https://"):
-            raise OperationContractError("IMPORT_ASSET URL sources must use HTTPS.")
+        if is_url:
+            try:
+                validate_asset_url(
+                    filepath,
+                    policy=InternetDownloadPolicy(allowed_extensions=tuple(allowed_suffixes)),
+                )
+            except InternetPolicyError as exc:
+                raise OperationContractError(str(exc)) from exc
+            return
     elif is_url:
         raise OperationContractError(f"{operation_type} only accepts local file paths.")
     if not any(normalized.endswith(suffix) for suffix in allowed_suffixes):
@@ -965,18 +1042,56 @@ def _validate_sculpt_region(region: Mapping[str, Any]) -> None:
         )
 
 
-def _validate_sculpt_strokes(strokes: list[Mapping[str, Any]]) -> None:
+def _validate_sculpt_strokes(
+    strokes: list[Mapping[str, Any]],
+    *,
+    operation_type: str = OperationType.APPLY_SCULPT_BRUSH_STROKES.value,
+    require_direction: bool = False,
+) -> None:
     if len(strokes) > 500:
         raise OperationContractError(
-            "APPLY_SCULPT_BRUSH_STROKES stroke count cannot exceed 500."
+            f"{operation_type} stroke count cannot exceed 500."
         )
     for index, stroke in enumerate(strokes):
         normal = stroke["normal"]
         magnitude = math.sqrt(sum(float(component) ** 2 for component in normal))
         if magnitude < 1e-9:
             raise OperationContractError(
-                f"APPLY_SCULPT_BRUSH_STROKES stroke {index} has a zero normal."
+                f"{operation_type} stroke {index} has a zero normal."
             )
+        if require_direction:
+            direction = stroke["direction"]
+            direction_magnitude = math.sqrt(
+                sum(float(component) ** 2 for component in direction)
+            )
+            if direction_magnitude < 1e-9:
+                raise OperationContractError(
+                    f"{operation_type} stroke {index} has a zero direction."
+                )
+
+
+def _validate_sculpt_symmetry(operation: Mapping[str, Any]) -> None:
+    axes = operation["mirror_axes"]
+    if len(axes) != len(set(axes)):
+        raise OperationContractError(
+            "APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES mirror_axes must be unique."
+        )
+    mirrored_count = len(operation["strokes"]) * (2 ** len(axes))
+    if mirrored_count > 500:
+        raise OperationContractError(
+            "APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES expanded stroke count cannot exceed 500."
+        )
+    origin = operation["symmetry_origin"]
+    kind = str(origin["kind"])
+    location = origin["location"]
+    if kind == "custom" and location is None:
+        raise OperationContractError(
+            "APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES custom symmetry origin needs location."
+        )
+    if kind != "custom" and location is not None:
+        raise OperationContractError(
+            "APPLY_SYMMETRIC_SCULPT_BRUSH_STROKES non-custom symmetry origins use null location."
+        )
 
 
 def _validate_shader_socket_pair(
@@ -1005,6 +1120,17 @@ def _validate_sculpt_mask_combine(operation: Mapping[str, Any]) -> None:
     if result in {source, target}:
         raise OperationContractError(
             "COMBINE_SCULPT_MASKS result mask must be a new mask name."
+        )
+
+
+def _validate_face_set_merge(operation: Mapping[str, Any]) -> None:
+    source_names = [str(name) for name in operation["source_face_set_names"]]
+    result = str(operation["merged_face_set_name"])
+    if len(source_names) != len(set(source_names)):
+        raise OperationContractError("MERGE_FACE_SETS source_face_set_names must be unique.")
+    if result in source_names:
+        raise OperationContractError(
+            "MERGE_FACE_SETS merged_face_set_name must be a new face-set name."
         )
 
 

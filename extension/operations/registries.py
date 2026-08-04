@@ -456,6 +456,11 @@ GENERATED_MESH_VARIANTS = (
     "smoothed",
     "displaced",
     "remeshed",
+    "voxel_remeshed",
+    "quad_remesh_prep",
+    "dynamic_topology_detail",
+    "multires_sculpt",
+    "sculpt_variant",
 )
 
 SCULPT_REGION_KINDS = (
@@ -467,6 +472,40 @@ SCULPT_REGION_OPERATIONS = (
     "smooth",
     "inflate",
     "flatten",
+)
+
+ADVANCED_SCULPT_BRUSH_TYPES = (
+    "clay",
+    "clay_strips",
+    "crease",
+    "pinch",
+    "scrape",
+    "grab",
+    "snake_hook",
+    "pose",
+)
+
+SCULPT_BRUSH_FALLOFFS = (
+    "smooth",
+    "linear",
+    "sharp",
+)
+
+SCULPT_SYMMETRY_AXES = (
+    "x",
+    "y",
+    "z",
+)
+
+SCULPT_SYMMETRY_ORIGINS = (
+    "object_origin",
+    "world_origin",
+    "custom",
+)
+
+DYNAMIC_TOPOLOGY_DETAIL_METHODS = (
+    "relative_detail",
+    "constant_detail",
 )
 
 PREVIEW_IMAGE_KINDS = (

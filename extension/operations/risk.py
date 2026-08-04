@@ -60,6 +60,11 @@ def affected_object_count(plan: OperationPlan) -> int:
             OperationType.CREATE_TEXT_OBJECT,
             OperationType.JOIN_OBJECTS,
             OperationType.IMPORT_ASSET,
+            OperationType.CREATE_VOXEL_REMESH_COPY,
+            OperationType.CREATE_QUAD_REMESH_PREP_COPY,
+            OperationType.CREATE_DYNAMIC_TOPOLOGY_DETAIL_COPY,
+            OperationType.CREATE_MULTIRES_SCULPT_COPY,
+            OperationType.CREATE_SCULPT_VARIANT_COPY,
         }:
             created_objects += 1
         elif operation.type is OperationType.LINK_OR_APPEND_BLEND_DATA:

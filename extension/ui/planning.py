@@ -13,9 +13,10 @@ from ..operations import (
     OperationPlan,
     OperationType,
     PlanStatus,
+    assess_plan_risk,
 )
 from ..operations.targets import TargetResolutionError, resolve_plan_targets
-from ..providers.base import Provider
+from ..providers.base import Provider, TokenUsage
 from ..providers.nvidia import (
     DEFAULT_NVIDIA_MODEL,
     NVIDIA_DEFAULT_BASE_URL,
@@ -113,6 +114,32 @@ def clear_planning_result() -> None:
 
 def pending_planning_result() -> PlanningResult | None:
     return _get_coordinator().pending_result
+
+
+def retain_local_plan_result(
+    state: AIASSISTANT_PG_State,
+    *,
+    snapshot: SceneContextSnapshot,
+    plan: OperationPlan,
+    prompt: str,
+    model: str = "local import handoff",
+) -> None:
+    result = PlanningResult(
+        snapshot=snapshot,
+        plan=plan,
+        risk=assess_plan_risk(plan),
+        response_id="",
+        request_id="",
+        model=model,
+        repair_attempted=False,
+        conversation=PlanningConversation(prompt),
+        usage=TokenUsage(),
+        provider_call_count=0,
+    )
+    _get_coordinator().retain(result)
+    _populate_plan(state, result)
+    state.workflow_status = WorkflowStatus.AWAITING_APPROVAL.value
+    state.status_message = "Review plan"
 
 
 def _build_provider(
